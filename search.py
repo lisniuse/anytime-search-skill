@@ -63,75 +63,72 @@ ENGINES: Dict[str, Dict] = {
         "name": "DuckDuckGo",
         "search_url": "https://duckduckgo.com/?q={query}&kl=us-en",
         "input_selector": 'input[name="q"]',
-        "result_containers": [
-            '[data-testid="result"]',
-            "article[data-testid]",
-            ".result",
-        ],
-        "title_sel": "h2",
-        "link_sel": "a[data-testid='result-title-a'], h2 a",
-        "snippet_sel": ["[data-result='snippet']", ".result__snippet"],
-        "wait_for": '[data-testid="result"], .result',
+        "result_containers": ['article[data-testid="result"]'],
+        "title_sel": "a[data-testid='result-title-a']",
+        "link_sel": "a[data-testid='result-title-a']",   # href 直接是真实 URL
+        "snippet_sel": [],          # class 全为动态 hash，走 snippet_nav 提取
+        "snippet_nav": "title_h2_parent_next_sibling",   # h2 的父 div 的 next sibling div
+        "wait_for": 'article[data-testid="result"]',
     },
     "yahoo": {
         "name": "Yahoo Search",
         "search_url": "https://search.yahoo.com/search?p={query}",
         "input_selector": 'input[name="p"]',
-        "result_containers": ["#web .searchCenterMiddle li div", ".algo"],
-        "title_sel": "h3",
-        "link_sel": "a[href]",
-        "snippet_sel": [".compText p", ".d-snap"],
-        "wait_for": "#web, .searchCenterMiddle",
+        "result_containers": [".algo"],
+        "title_sel": "h3.title",
+        "link_sel": "a[href]",          # 部分结果为 r.search.yahoo.com 跳转，在 extract_results 里解码
+        "snippet_sel": ["div.compText p"],
+        "wait_for": ".algo",
     },
     "yandex": {
         "name": "Yandex",
         "search_url": "https://yandex.com/search/?text={query}",
         "input_selector": 'input[name="text"]',
-        "result_containers": [".serp-item", '[data-fast-name="organic"]'],
-        "title_sel": "h2",
-        "link_sel": "a.link",
-        "snippet_sel": [".OrganicTextContentSpan", ".organic__text"],
-        "wait_for": ".serp-list, .main__content",
+        "result_containers": ["li.serp-item"],
+        "title_sel": "a.OrganicTitle-Link",
+        "link_sel": "a.OrganicTitle-Link",  # href 直接是真实 URL
+        "snippet_sel": ["span.OrganicTextContentSpan", ".organic__text"],
+        "wait_for": "li.serp-item",
     },
     "ecosia": {
         "name": "Ecosia",
         "search_url": "https://www.ecosia.org/search?q={query}",
         "input_selector": 'input[name="q"]',
-        "result_containers": [".result", "article.result"],
-        "title_sel": "h2",
-        "link_sel": "a.result-url",
-        "snippet_sel": [".result-snippet"],
-        "wait_for": ".results",
+        "result_containers": ["article.result"],
+        "title_sel": "a.result__link",
+        "link_sel": "a.result__link",   # href 直接是真实 URL
+        "snippet_sel": ["p.web-result__description"],
+        "wait_for": "article.result",
     },
     "startpage": {
         "name": "Startpage",
         "search_url": "https://www.startpage.com/search?q={query}",
         "input_selector": 'input[name="q"]',
-        "result_containers": [".result", ".w-gl__result"],
-        "title_sel": "h3",
-        "link_sel": "a.result-link",
-        "snippet_sel": [".result-text", "p.search-result__body"],
-        "wait_for": ".results, .w-gl",
+        "result_containers": [".result"],
+        "title_sel": "a.result-title",
+        "link_sel": "a.result-title",   # href 直接是真实 URL
+        "snippet_sel": ["p.description"],
+        "wait_for": ".result",
     },
     "brave": {
         "name": "Brave Search",
         "search_url": "https://search.brave.com/search?q={query}",
         "input_selector": 'input[name="q"]',
-        "result_containers": [".snippet", '[data-type="web"]'],
-        "title_sel": "span.snippet-title",
-        "link_sel": "a[href]",
-        "snippet_sel": [".snippet-description"],
-        "wait_for": "#results",
+        "result_containers": ['div.snippet[data-type="web"]'],
+        "title_sel": "div.title.search-snippet-title",
+        "link_sel": "a.l1",            # href 直接是真实 URL
+        "snippet_sel": ["div.generic-snippet div.content", "div.content.desktop-default-regular"],
+        "wait_for": 'div.snippet[data-type="web"]',
     },
     "ask": {
         "name": "Ask.com",
         "search_url": "https://www.ask.com/web?q={query}",
         "input_selector": 'input[name="q"]',
-        "result_containers": [".PartialSearchResults-item"],
-        "title_sel": ".PartialSearchResults-item-title",
-        "link_sel": ".PartialSearchResults-item-title a",
-        "snippet_sel": [".PartialSearchResults-item-abstract"],
-        "wait_for": ".PartialSearchResults",
+        "result_containers": [".result"],
+        "title_sel": "a.result-title-link",
+        "link_sel": "a.result-title-link",  # href 直接是真实 URL
+        "snippet_sel": ["p.result-abstract"],
+        "wait_for": ".result",
     },
     "dogpile": {
         "name": "Dogpile",
@@ -168,21 +165,24 @@ ENGINES: Dict[str, Dict] = {
         "name": "Sogou",
         "search_url": "https://www.sogou.com/web?query={query}",
         "input_selector": 'input[name="query"], #query',
-        "result_containers": ["#results .vrwrap", ".rb"],
-        "title_sel": "h3",
-        "link_sel": "h3 a",
-        "snippet_sel": [".str_info", "p"],
-        "wait_for": "#results",
+        "result_containers": [".vrwrap"],
+        "title_sel": "h3.vr-title",
+        "link_sel": "h3.vr-title a",
+        "snippet_sel": ["div.fz-mid.space-txt", "p.star-wiki"],
+        "wait_for": ".vrwrap",
+        "base_url": "https://www.sogou.com",  # for relative /link?url= hrefs
     },
     "360": {
         "name": "360 Search (so.com)",
         "search_url": "https://www.so.com/s?q={query}",
         "input_selector": 'input[name="q"], #input',
-        "result_containers": ["#results .res-list", ".result"],
-        "title_sel": "h3",
-        "link_sel": "h3 a",
-        "snippet_sel": [".res-desc"],
-        "wait_for": "#results",
+        # 只匹配普通结果项，排除广告/推荐/AI卡片等混入项
+        "result_containers": ["ul.result > li.res-list"],
+        "title_sel": "h3.res-title a",
+        "link_sel": "h3.res-title a",
+        "link_attr": "data-mdurl",   # 真实 URL 在 data-mdurl，href 是 360 跳转链接
+        "snippet_sel": [".res-list-summary", ".res-desc"],
+        "wait_for": "ul.result",
     },
     "shenma": {
         "name": "Shenma (sou.com)",
@@ -532,9 +532,10 @@ def extract_results(page: Page, engine_cfg: Dict, max_results: int = 10) -> List
 
         # URL
         link_sel = engine_cfg["link_sel"]
+        link_attr = engine_cfg.get("link_attr", "href")  # 默认取 href，可配置为 data-mdurl 等
         link_el = container.select_one(link_sel)
         if link_el:
-            href = link_el.get("href", "")
+            href = link_el.get(link_attr) or link_el.get("href", "")
             if href and not href.startswith("#"):
                 # Clean Google redirect URLs
                 if "google.com/url?" in href:
@@ -545,14 +546,33 @@ def extract_results(page: Page, engine_cfg: Dict, max_results: int = 10) -> List
                     m = re.search(r"[?&]url=([^&]+)", href)
                     if m:
                         href = urllib.parse.unquote(m.group(1))
+                # Clean Yahoo redirect URLs (r.search.yahoo.com/.../RU=<encoded-url>/...)
+                elif "r.search.yahoo.com" in href:
+                    m = re.search(r"[/;]RU=([^/;]+)", href)
+                    if m:
+                        href = urllib.parse.unquote(m.group(1))
+                # Resolve relative URLs (e.g. Sogou /link?url=...)
+                elif href.startswith("/") and engine_cfg.get("base_url"):
+                    href = engine_cfg["base_url"] + href
                 url = href
 
-        # Snippet
-        for snip_sel in engine_cfg["snippet_sel"]:
-            snip_el = container.select_one(snip_sel)
-            if snip_el:
-                snippet = snip_el.get_text(strip=True)
-                break
+        # Snippet — 优先使用 snippet_nav 导航，fallback 到 snippet_sel
+        snippet_nav = engine_cfg.get("snippet_nav", "")
+        if snippet_nav == "title_h2_parent_next_sibling":
+            # DuckDuckGo: a[data-testid=result-title-a] -> h2 -> div(title wrapper) -> next div = snippet
+            title_a_el = container.select_one(engine_cfg["title_sel"])
+            if title_a_el:
+                h2 = title_a_el.find_parent("h2")
+                title_wrapper = h2.find_parent("div") if h2 else None
+                snip_div = title_wrapper.find_next_sibling("div") if title_wrapper else None
+                if snip_div:
+                    snippet = snip_div.get_text(strip=True)
+        if not snippet:
+            for snip_sel in engine_cfg["snippet_sel"]:
+                snip_el = container.select_one(snip_sel)
+                if snip_el:
+                    snippet = snip_el.get_text(strip=True)
+                    break
 
         if title or url:
             results.append({"title": title, "url": url, "snippet": snippet})

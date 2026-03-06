@@ -5,7 +5,14 @@
       "Bash(mkdir -p \"/c/Users/Administrator/.claude/skills\")",
       "Read(//c/Users/Administrator/.claude/skills//**)",
       "Bash(cmd:*)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(python:*)",
+      "Bash(py:*)",
+      "Bash(where python)",
+      "Bash(where python3)",
+      "Read(//usr/**)",
+      "Read(//usr/local/**)",
+      "Bash(D:/dev/tools/python/bin/python.bat:*)"
     ]
   }
 }
