@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(mkdir -p \"/c/Users/Administrator/.claude/skills\")",
+      "Read(//c/Users/Administrator/.claude/skills//**)",
+      "Bash(cmd:*)",
+      "Bash(mkdir:*)"
+    ]
+  }
+}
