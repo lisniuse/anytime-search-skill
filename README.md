@@ -1,6 +1,6 @@
 # Anytime Search Skill
 
-基于 [Playwright](https://playwright.dev/python/) 的隐身浏览器搜索工具，支持 18+ 个主流搜索引擎、反爬虫检测规避、网页内容爬取，结果直接输出到控制台。
+基于 [Playwright](https://playwright.dev/python/) 的隐身浏览器搜索工具，代码覆盖 18+ 个搜索引擎（当前稳定可用约 6 个，见[实测可用性矩阵](#实测可用性矩阵重要)）、反爬虫检测规避、网页内容爬取、批量模式，结果输出到控制台。
 
 ---
 
@@ -104,6 +104,40 @@ python search.py [选项]
 | `--json` | — | — | 以 JSON 格式输出结果 |
 | `--list-engines` | — | — | 列出所有支持的搜索引擎并退出 |
 | `--clear-session` | — | — | 删除已保存的浏览器会话/Cookie 并退出 |
+| `--batch-file` | — | — | 批量模式：传入 JSON 数组文件，单个浏览器跑完全部查询，见下文 |
+
+### 批量模式 `--batch-file`
+
+逐条调用 CLI 每次都要付 5-8 秒的 Chromium 冷启动。批量模式只启动**一个 browser**，
+按引擎 locale 分组复用 context，单条失败不终止整批：
+
+```bash
+cat > queries.json <<'EOF'
+[
+  {"query": "泰国 橡胶 减产 2026", "engine": "baidu", "num_results": 8, "tag": "ru"},
+  {"query": "opec supply cut", "engine": "google", "num_results": 6, "tag": "sc"}
+]
+EOF
+python search.py --batch-file queries.json --json
+```
+
+输出为 **JSONL**（每行一个对象：`{index, query, engine, results, error, tag}`），便于流式消费。
+
+### 退出码约定
+
+| 码 | 含义 |
+|----|------|
+| `0` | 成功且有结果 |
+| `1` | 参数/配置错误 |
+| `2` | 遇到验证码（Google `/sorry/`），建议换引擎或 `--no-headless` 手动过验证 |
+| `3` | **查询成功但 0 结果**（引擎限流软失败或确实无结果）——多引擎调度方可据此直接换引擎 |
+
+### 环境变量
+
+| 变量 | 作用 |
+|------|------|
+| `ASX_STATE_FILE` | 覆盖会话状态文件路径。**并发/多进程调用方必须为每个进程指定独立路径**，否则会共享同一 `storage_state.json` 互相串写 Cookie |
+| `PW_CHROME` | 指定系统 Chrome 可执行文件路径（默认用 Playwright 自带 Chromium） |
 
 ---
 
@@ -261,6 +295,27 @@ python search.py --list-engines
 | 引擎名 | 搜索引擎 | 说明 |
 |--------|----------|------|
 | `mail` | Mail.ru Search | 俄罗斯 Mail.ru 搜索 |
+
+### 实测可用性矩阵（重要）
+
+代码"支持"≠当前网络环境下"能返回结果"。反爬策略随时变动，以下为 **2026-09-30 在
+中国大陆 + 本地 7890 代理环境下的批量实测**（同样查询、`-n 6`），供选型参考，
+**使用前请自行 `--list-engines` 后逐个 ping 一遍**：
+
+| 引擎 | 免代理(中文站) | 走代理(国际站) | 备注 |
+|------|:---:|:---:|------|
+| `baidu` | ✅ | — | 连打 20+ 条会整场限流返回空(软失败 exit 3)，需配合轮换引擎 |
+| `sogou` | ✅ | — | 中文稳定，微信内容独有优势 |
+| `360` | ✅ | — | 中文可用 |
+| `shenma` | ❌ 空 | — | 当前选择器失效 |
+| `brave` | — | ✅ | 英文一手信源好用 |
+| `google` | — | ✅ | 需代理；已修复新版 goto 包裹还原真实 URL |
+| `bing` | — | ✅ | 可用 |
+| `duckduckgo` | ❌ 空 | ❌ 空 | 选择器已腐烂，多引擎调度器中会作为软失败跳过 |
+| `startpage` / `ecosia` | ❌ 空 | ❌ 空 | 当前反爬拦死 |
+
+> 结论：宣传的"18+"是**代码覆盖数**，实际长期稳定可用约 **6 个**（baidu/sogou/360 +
+> brave/google/bing）。调度器应按引擎分组并行、组内串行限速，并对 exit 3 做换引擎重试。
 
 ---
 

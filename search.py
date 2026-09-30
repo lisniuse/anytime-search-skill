@@ -672,8 +672,11 @@ def create_context(
     locale, tz, langs = REGION_I18N.get((engine_key or "").lower(), DEFAULT_I18N)
     accept_lang = _accept_lang(langs)
 
+    # PW_CHROME: 指定系统 Chrome 可执行文件路径(比自带 Chromium 指纹更"真实"); 未设则用默认
+    _chrome = os.environ.get("PW_CHROME")
     browser = playwright_instance.chromium.launch(
         headless=headless,
+        executable_path=_chrome if _chrome and Path(_chrome).exists() else None,
         args=[
             # 反自动化检测只需要 AutomationControlled; 之前关同源/站点隔离/放行混合内容
             # 对"搜索引擎结果页抓取"毫无必要, 却在访问不可信结果链接时把浏览器变成裸奔(安全审计 2026-09-30 移除)。
