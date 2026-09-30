@@ -290,9 +290,9 @@ STEALTH_INIT_SCRIPT = """
         Object.defineProperty(navigator, 'plugins', { get: makePluginArray });
     } catch(e) {}
 
-    // Mock languages
+    // Mock languages (占位符由 create_context 按引擎地区注入)
     Object.defineProperty(navigator, 'languages', {
-        get: () => ['en-US', 'en'],
+        get: () => __NAV_LANGS__,
     });
 
     // Mock platform
@@ -601,12 +601,15 @@ def _resolve_wrapped_urls(page: Page, results: List[Dict]) -> List[Dict]:
             href = "https://www.google.com" + href
         if "/goto?url=" not in href:
             continue
-        try:
-            resp = page.context.request.get(href, timeout=15000)
-            if resp.ok and resp.url and "/search?" not in resp.url:
-                r["url"] = resp.url
-        except Exception:
-            pass  # 失败保留原 token URL, 不比坏
+        for attempt in range(2):  # 间歇性 400/超时, 重试一次
+            try:
+                resp = page.context.request.get(href, timeout=15000)
+                if resp.ok and resp.url and "/search?" not in resp.url and "/goto" not in resp.url:
+                    r["url"] = resp.url
+                    break
+            except Exception:
+                pass
+        # 失败保留原 token URL, 不替换成更坏
     return results
 
 
@@ -633,13 +636,38 @@ def _parse_proxy(proxy_url: str) -> dict:
     return proxy
 
 
+# 按引擎地区匹配 locale/时区/语言: 中文查询配"美国浏览器"是异常指纹(2026-09-30 实测
+# baidu 连打后整场限流的诱因之一), 让请求看起来就是本地用户。
+REGION_I18N: Dict[str, Tuple[str, str, List[str]]] = {
+    "baidu": ("zh-CN", "Asia/Shanghai", ["zh-CN", "zh"]),
+    "sogou": ("zh-CN", "Asia/Shanghai", ["zh-CN", "zh"]),
+    "360": ("zh-CN", "Asia/Shanghai", ["zh-CN", "zh"]),
+    "shenma": ("zh-CN", "Asia/Shanghai", ["zh-CN", "zh"]),
+    "naver": ("ko-KR", "Asia/Seoul", ["ko-KR", "ko"]),
+    "yahoo_jp": ("ja-JP", "Asia/Tokyo", ["ja-JP", "ja"]),
+    "yandex": ("ru-RU", "Europe/Moscow", ["ru-RU", "ru"]),
+    "mail": ("ru-RU", "Europe/Moscow", ["ru-RU", "ru"]),
+}
+DEFAULT_I18N: Tuple[str, str, List[str]] = ("en-US", "America/New_York", ["en-US", "en"])
+
+
+def _accept_lang(languages: List[str]) -> str:
+    parts = [languages[0]] + [f"{l};q=0.9" for l in languages[1:]]
+    if not any(l.startswith("en") for l in languages):
+        parts.append("en;q=0.7")
+    return ",".join(parts)
+
+
 def create_context(
     playwright_instance,
     headless: bool,
     proxy_url: Optional[str] = None,
+    engine_key: Optional[str] = None,
 ) -> Tuple[Browser, BrowserContext]:
     ua = random.choice(USER_AGENTS)
     viewport = random.choice(VIEWPORTS)
+    locale, tz, langs = REGION_I18N.get((engine_key or "").lower(), DEFAULT_I18N)
+    accept_lang = _accept_lang(langs)
 
     browser = playwright_instance.chromium.launch(
         headless=headless,
@@ -651,19 +679,19 @@ def create_context(
             "--disable-web-security",
             "--allow-running-insecure-content",
             "--disable-dev-shm-usage",
-            "--lang=en-US,en",
+            f"--lang={langs[0]}",
         ],
     )
 
     ctx_kwargs: dict = dict(
         user_agent=ua,
         viewport=viewport,
-        locale="en-US",
-        timezone_id="America/New_York",
+        locale=locale,
+        timezone_id=tz,
         permissions=[],
         java_script_enabled=True,
         extra_http_headers={
-            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Language": accept_lang,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Encoding": "gzip, deflate, br",
             "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
@@ -683,8 +711,8 @@ def create_context(
 
     context = browser.new_context(**ctx_kwargs)
 
-    # Inject stealth script on every new page
-    context.add_init_script(STEALTH_INIT_SCRIPT)
+    # Inject stealth script on every new page (navigator.languages 按引擎地区注入)
+    context.add_init_script(STEALTH_INIT_SCRIPT.replace("__NAV_LANGS__", json.dumps(langs)))
 
     return browser, context
 
@@ -802,7 +830,7 @@ def do_search(
     url = engine_cfg["search_url"].format(query=encoded)
 
     with sync_playwright() as pw:
-        browser, context = create_context(pw, headless, proxy_url=proxy_url)
+        browser, context = create_context(pw, headless, proxy_url=proxy_url, engine_key=engine_key)
         page = context.new_page()
 
         try:
