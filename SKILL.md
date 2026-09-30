@@ -29,7 +29,8 @@ PYTHONIOENCODING=utf-8 python D:/dev/github/anytime-search-skill/search.py -q "<
 | `-e` / `--engine` | `google` | See engine table below |
 | `-n` / `--num-results` | `10` | Max results to return |
 | `--json` | off | Output as JSON array `[{title, url, snippet}]` |
-| `--deep` | off | Crawl each result URL, return full page content instead of snippet |
+| `--deep` | off | Crawl each result URL; snippet becomes full page **plain text** (nav/footer stripped, LLM-friendly). `--deep-html` = legacy HTML |
+| `--as-text` | off | For `-u` crawls: return plain text instead of cleaned HTML |
 | `-u` / `--url` | — | Crawl a URL directly (returns cleaned HTML body; `--wait-for CSS` for SPAs) |
 | `--proxy` | — | e.g. `http://127.0.0.1:7890` or `socks5://user:pass@host:port` |
 | `--batch-file` | — | Batch mode, see below |
@@ -64,7 +65,9 @@ Narrow, concrete combinations beat vague words:
 
 ## Batch mode
 
-One browser session for many queries (no per-query cold-start). Input: JSON array; output: JSONL (one object per line: `{index, query, engine, results, error, tag}`); a failed query never aborts the batch.
+One session for many queries (no per-query cold-start). Input: JSON array; output: JSONL (one object per line: `{index, query, engine, results, error, tag}`); a failed query never aborts the batch.
+
+**Parallelism**: add `--workers N` for engine-lane concurrency — one lane (= thread + browser + own state file `storage_state_<engine>.json`) per engine, queries **serial within a lane** (respects per-engine rate limits), lanes run fully parallel, `N` caps simultaneous lanes. Best `N` = number of distinct engines in the batch (e.g. 3 Chinese + 3 international → `--workers 6`). `--workers 1` (default) runs lanes one after another.
 
 ```bash
 cat > queries.json <<'EOF'

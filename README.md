@@ -102,9 +102,13 @@ python search.py [选项]
 | `--proxy` | — | — | 代理 URL，支持 HTTP/SOCKS5，如 `http://127.0.0.1:7890` 或 `socks5://user:pass@host:port` |
 | `--no-auto-close` | — | — | 获取结果后保持浏览器打开，按 Enter 键才关闭 |
 | `--json` | — | — | 以 JSON 格式输出结果 |
+| `--deep` | — | — | 深度搜索：抓取每条结果 URL 的**纯文本**正文替换摘要（去导航/页脚/标签，LLM 友好）|
+| `--deep-html` | — | — | 配合 `--deep`：保留旧版"清洗后压缩 HTML"输出（不加则默认纯文本）|
+| `--as-text` | — | — | `-u` 爬取模式返回纯文本；默认仍返回清洗后 HTML |
 | `--list-engines` | — | — | 列出所有支持的搜索引擎并退出 |
 | `--clear-session` | — | — | 删除已保存的浏览器会话/Cookie 并退出 |
-| `--batch-file` | — | — | 批量模式：传入 JSON 数组文件，单个浏览器跑完全部查询，见下文 |
+| `--batch-file` | — | — | 批量模式：传入 JSON 数组文件，一个会话跑完全部查询，见下文 |
+| `--workers` | — | `1` | 批量模式引擎车道并发数：一引擎一车道（道内串行限速、道间并发），N 封顶车道数 |
 
 ### 批量模式 `--batch-file`
 
@@ -122,6 +126,16 @@ python search.py --batch-file queries.json --json
 ```
 
 输出为 **JSONL**（每行一个对象：`{index, query, engine, results, error, tag}`），便于流式消费。
+
+加 `--workers N` 启用**引擎车道并发**：一个引擎一条车道（独立线程+浏览器+会话文件
+`storage_state_<引擎>.json`），**道内串行限速、道间全并发**，`N` 封顶同时车道数。
+同引擎永远不并发（风控按引擎计），所以最佳 N ≈ 批内不同引擎数：
+
+```bash
+python search.py --batch-file queries.json --workers 6 --proxy http://127.0.0.1:7890
+```
+
+`--workers 1`（默认）则各引擎依次跑，最保守。
 
 ### 退出码约定
 
