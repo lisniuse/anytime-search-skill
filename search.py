@@ -598,22 +598,57 @@ def extract_results(page: Page, engine_cfg: Dict, max_results: int = 10) -> List
 
 
 def _resolve_wrapped_urls(page: Page, results: List[Dict]) -> List[Dict]:
-    """还原 google 新版 /goto?url=<token> 与 /url? 包裹链接: 跟随一次重定向取最终 URL。"""
-    for r in results:
-        href = r.get("url") or ""
-        if href.startswith("/goto?") or href.startswith("/url?"):
-            href = "https://www.google.com" + href
-        if "/goto?url=" not in href:
-            continue
-        for attempt in range(2):  # 间歇性 400/超时, 重试一次
+    """还原 google 新版 /goto?url=<token> 包裹链接: 跟随一次重定向取最终 URL。
+
+    首选真实标签页 goto(完整浏览器指纹+JS 重定向都跟得住); context.request.get 会被
+    Google 风控识别为无指纹请求, 2026-09-30 实测 6/6 全挂, 只留作建标签失败时的兜底。
+    失败保留原 token URL, 不替换成更坏(串行 deep 仍能靠同源解析兜底抓取)。
+    """
+    def is_real_url(u: str) -> bool:
+        return bool(u) and u.startswith("http") and "/goto" not in u \
+            and "/search?" not in u and "/url?" not in u \
+            and not u.startswith("chrome-error") and not u.startswith("data:")
+
+    resolver: Optional[Page] = None
+    try:
+        resolver = page.context.new_page()
+    except Exception:
+        pass
+
+    try:
+        for r in results:
+            href = r.get("url") or ""
+            if href.startswith("/goto?") or href.startswith("/url?"):
+                href = "https://www.google.com" + href
+            if "/goto?url=" not in href:
+                continue
+            for attempt in range(2):
+                try:
+                    if resolver:
+                        resolver.goto(href, wait_until="domcontentloaded", timeout=15000)
+                        # 服务端 30x 之外还可能是 JS 跳转, 短轮询直到 URL 离开壳
+                        deadline = time.time() + 3
+                        final = resolver.url
+                        while not is_real_url(final) and time.time() < deadline:
+                            time.sleep(0.3)
+                            final = resolver.url
+                        if is_real_url(final):
+                            r["url"] = final
+                            break
+                    else:
+                        resp = page.context.request.get(href, timeout=15000)
+                        if resp.ok and is_real_url(resp.url):
+                            r["url"] = resp.url
+                            break
+                except Exception:
+                    pass
+            human_delay(250, 550)  # 逐条 goto 给 google 节流
+    finally:
+        if resolver:
             try:
-                resp = page.context.request.get(href, timeout=15000)
-                if resp.ok and resp.url and "/search?" not in resp.url and "/goto" not in resp.url:
-                    r["url"] = resp.url
-                    break
+                resolver.close()
             except Exception:
                 pass
-        # 失败保留原 token URL, 不替换成更坏
     return results
 
 
