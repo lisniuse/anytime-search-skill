@@ -26,8 +26,9 @@ except ImportError:
     print("[ERROR] playwright not installed. Run: pip install playwright && playwright install chromium")
     sys.exit(1)
 
-# Windows 控制台/重定向默认 GBK, 抓回的正文常含无法映射的码点 → UnicodeEncodeError 崩掉整个输出
-# (2026-09-30 实测: python search.py --deep ... > out.json 即触发)。统一改 UTF-8, 失败则放弃。
+# Windows console/redirect defaults to GBK; crawled pages often contain unmappable code points,
+# raising UnicodeEncodeError and killing the whole output (field-tested 2026-09-30:
+# `python search.py --deep ... > out.json` triggers it). Force UTF-8, best effort.
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -52,15 +53,15 @@ ENGINES: Dict[str, Dict] = {
         "name": "Google",
         "search_url": "https://www.google.com/search?q={query}&hl=en",
         "input_selector": 'textarea[name="q"], input[name="q"]',
-        # 2026 新版 SERP 已移除 .g 包裹(#search .g 命中 0), 退到 data-hveid 祖先层;
-        # 配合 require_title 滤掉无标题的 hveid 壳 + URL 去重, 实测恢复 9 条真结果
+        # 2026 SERP dropped the .g wrapper (#search .g matches 0); fall back to data-hveid ancestors;
+        # require_title filters titleless hveid shells + URL dedup → back to 9 real results in tests
         "result_containers": ["#search .g", "#rso .g", "div.g", "li.g", "div[data-hveid]"],
         "title_sel": "h3",
         "link_sel": "a[href]",
         "snippet_sel": [".VwiC3b", ".s3v9rd", ".IsZvec", "[data-sncf]", ".st"],
         "wait_for": "#search, #rso, .MBeuO, main",
         "require_title": True,
-        # 2026 新版链接包裹: href=/goto?url=<protobuf token>(无明文), 跟随重定向可还原真实 URL
+        # 2026 link wrapper: href=/goto?url=<protobuf token> (no plaintext); follow redirect to recover the real URL
         "resolve_redirects": True,
     },
     "bing": {
@@ -79,9 +80,9 @@ ENGINES: Dict[str, Dict] = {
         "input_selector": 'input[name="q"]',
         "result_containers": ['article[data-testid="result"]'],
         "title_sel": "a[data-testid='result-title-a']",
-        "link_sel": "a[data-testid='result-title-a']",   # href 直接是真实 URL
-        "snippet_sel": [],          # class 全为动态 hash，走 snippet_nav 提取
-        "snippet_nav": "title_h2_parent_next_sibling",   # h2 的父 div 的 next sibling div
+        "link_sel": "a[data-testid='result-title-a']",   # href is already the real URL
+        "snippet_sel": [],          # all classes are dynamic hashes; extract via snippet_nav
+        "snippet_nav": "title_h2_parent_next_sibling",   # next sibling div of the h2's parent div
         "wait_for": 'article[data-testid="result"]',
     },
     "yahoo": {
@@ -90,7 +91,7 @@ ENGINES: Dict[str, Dict] = {
         "input_selector": 'input[name="p"]',
         "result_containers": [".algo"],
         "title_sel": "h3.title",
-        "link_sel": "a[href]",          # 部分结果为 r.search.yahoo.com 跳转，在 extract_results 里解码
+        "link_sel": "a[href]",          # some results go through r.search.yahoo.com redirects, decoded in extract_results
         "snippet_sel": ["div.compText p"],
         "wait_for": ".algo",
     },
@@ -100,7 +101,7 @@ ENGINES: Dict[str, Dict] = {
         "input_selector": 'input[name="text"]',
         "result_containers": ["li.serp-item"],
         "title_sel": "a.OrganicTitle-Link",
-        "link_sel": "a.OrganicTitle-Link",  # href 直接是真实 URL
+        "link_sel": "a.OrganicTitle-Link",  # href is already the real URL
         "snippet_sel": ["span.OrganicTextContentSpan", ".organic__text"],
         "wait_for": "li.serp-item",
     },
@@ -110,7 +111,7 @@ ENGINES: Dict[str, Dict] = {
         "input_selector": 'input[name="q"]',
         "result_containers": ["article.result"],
         "title_sel": "a.result__link",
-        "link_sel": "a.result__link",   # href 直接是真实 URL
+        "link_sel": "a.result__link",   # href is already the real URL
         "snippet_sel": ["p.web-result__description"],
         "wait_for": "article.result",
     },
@@ -120,7 +121,7 @@ ENGINES: Dict[str, Dict] = {
         "input_selector": 'input[name="q"]',
         "result_containers": [".result"],
         "title_sel": "a.result-title",
-        "link_sel": "a.result-title",   # href 直接是真实 URL
+        "link_sel": "a.result-title",   # href is already the real URL
         "snippet_sel": ["p.description"],
         "wait_for": ".result",
     },
@@ -130,7 +131,7 @@ ENGINES: Dict[str, Dict] = {
         "input_selector": 'input[name="q"]',
         "result_containers": ['div.snippet[data-type="web"]'],
         "title_sel": "div.title.search-snippet-title",
-        "link_sel": "a.l1",            # href 直接是真实 URL
+        "link_sel": "a.l1",            # href is already the real URL
         "snippet_sel": ["div.generic-snippet div.content", "div.content.desktop-default-regular"],
         "wait_for": 'div.snippet[data-type="web"]',
     },
@@ -140,7 +141,7 @@ ENGINES: Dict[str, Dict] = {
         "input_selector": 'input[name="q"]',
         "result_containers": [".result"],
         "title_sel": "a.result-title-link",
-        "link_sel": "a.result-title-link",  # href 直接是真实 URL
+        "link_sel": "a.result-title-link",  # href is already the real URL
         "snippet_sel": ["p.result-abstract"],
         "wait_for": ".result",
     },
@@ -190,11 +191,11 @@ ENGINES: Dict[str, Dict] = {
         "name": "360 Search (so.com)",
         "search_url": "https://www.so.com/s?q={query}",
         "input_selector": 'input[name="q"], #input',
-        # 只匹配普通结果项，排除广告/推荐/AI卡片等混入项
+        # organic results only; exclude ads / recommendations / AI cards mixed into the page
         "result_containers": ["ul.result > li.res-list"],
         "title_sel": "h3.res-title a",
         "link_sel": "h3.res-title a",
-        "link_attr": "data-mdurl",   # 真实 URL 在 data-mdurl，href 是 360 跳转链接
+        "link_attr": "data-mdurl",   # real URL lives in data-mdurl; href is a 360 redirect link
         "snippet_sel": [".res-list-summary", ".res-desc"],
         "wait_for": "ul.result",
     },
@@ -299,7 +300,7 @@ STEALTH_INIT_SCRIPT = """
         Object.defineProperty(navigator, 'plugins', { get: makePluginArray });
     } catch(e) {}
 
-    // Mock languages (占位符由 create_context 按引擎地区注入)
+    // Mock languages (placeholder injected by create_context per engine region)
     Object.defineProperty(navigator, 'languages', {
         get: () => __NAV_LANGS__,
     });
@@ -407,9 +408,9 @@ STEALTH_INIT_SCRIPT = """
 """
 
 # ──────────────────────── User Agents ─────────────────────────
-# 已弃用: UA/Sec-Ch-Ua 现由 create_context 从 browser.version()
-# 真实派生 —— 静态写死 Chrome/120-122 与运行时引擎版本自相矛盾, 本身就是检测信号,
-# 且每月随 Chromium 更新过期。保留空列表仅为外部 import 兼容。
+# Deprecated: UA/Sec-Ch-Ua are now derived from the real browser.version() in create_context —
+# hardcoding Chrome/120-122 contradicts the runtime engine version (itself a detection signal)
+# and goes stale every Chromium release. Kept as an empty list only for external import compat.
 USER_AGENTS: List[str] = []
 
 VIEWPORTS = [
@@ -423,7 +424,7 @@ VIEWPORTS = [
 
 # ──────────────────────── HTML Cleaner ────────────────────────
 
-# 直接整体移除的标签（非展示性）
+# Tags removed wholesale (non-presentational)
 _REMOVE_TAGS = {
     "script", "noscript", "style", "link", "meta",
     "img", "picture", "source", "svg", "canvas",
@@ -431,13 +432,13 @@ _REMOVE_TAGS = {
     "iframe", "frame", "frameset", "embed", "object", "param",
     "map", "area",
     "template", "slot", "shadow",
-    "figure", "figcaption",  # 通常包裹图片
+    "figure", "figcaption",  # usually wrap images
     "input", "button", "select", "option", "optgroup",
     "textarea", "form", "label", "fieldset", "legend",
     "dialog", "menu",
 }
 
-# 保留白名单属性（去掉一切其他属性，包括自定义属性）
+# Whitelisted attributes per tag (all other attributes, incl. custom ones, are stripped)
 _KEEP_ATTRS: Dict[str, set] = {
     "a":         set(),
     "td":        {"colspan", "rowspan"},
@@ -454,16 +455,16 @@ _KEEP_ATTRS: Dict[str, set] = {
 
 
 def _is_empty_tag(tag: Tag) -> bool:
-    """判断标签是否无有效内容（无文本、无有意义的子元素）。"""
+    """Whether the tag holds no meaningful content (no text, no useful children)."""
     return not tag.get_text(strip=True)
 
 
 
 def _remove_empty_tags(soup) -> None:
     """
-    循环移除无内容的标签，直到没有可移除的为止。
-    每轮自底向上处理，确保父节点在子节点清空后也能被移除。
-    void 元素（br/hr/wbr）本身无子节点但有展示意义，保留。
+    Iteratively remove content-less tags until stable.
+    Each pass works bottom-up so parents become removable once children are cleared.
+    Void elements (br/hr/wbr) have no children but are presentational — kept.
     """
     VOID_ELEMENTS = {"br", "hr", "wbr"}
     changed = True
@@ -479,39 +480,38 @@ def _remove_empty_tags(soup) -> None:
 
 def clean_html(html: str) -> str:
     """
-    深度清洗 HTML，只保留纯展示文本结构：
-    - 移除所有非展示标签（script/style/img/svg/iframe 等）
-    - 移除所有元素的全部属性（仅保留少量语义必要属性，如 a[href]）
-    - 移除无效 href（javascript:、#、空值）
-    - 递归移除内容为空的标签
-    - 只返回 <body> 内容
+    Deep-clean HTML down to presentational text structure:
+    - remove all non-presentational tags (script/style/img/svg/iframe, ...)
+    - strip all attributes (keeping only a few semantically necessary ones)
+    - remove empty tags recursively
+    - return only the <body> content, compressed
     """
     soup = BeautifulSoup(html, "lxml")
 
-    # 1. 整体移除非展示标签（含其子树）
+    # 1. Remove non-presentational tags entirely (with their subtrees)
     for tag_name in _REMOVE_TAGS:
         for tag in soup.find_all(tag_name):
             tag.decompose()
 
-    # 2. 遍历所有剩余元素，清空属性（保留白名单）
+    # 2. Strip attributes from all remaining elements (keep the whitelist)
     for tag in soup.find_all(True):
         allowed = _KEEP_ATTRS.get(tag.name, set())
         tag.attrs = {k: v for k, v in tag.attrs.items() if k in allowed}
 
-    # 3. 移除 HTML 注释
+    # 3. Remove HTML comments
     for comment in soup.find_all(string=lambda t: isinstance(t, Comment)):
         comment.extract()
 
-    # 4. 递归移除空标签（自底向上，直到稳定）
+    # 4. Remove empty tags recursively (bottom-up until stable)
     _remove_empty_tags(soup)
 
-    # 4. 只返回 body 内容
+    # 5. Return only the body content
     body = soup.find("body")
     raw = str(body) if body else str(soup)
 
-    # 5. 压缩 HTML：合并连续空白/换行为单个空格，去掉标签间多余空白
-    compressed = re.sub(r'>\s+<', '><', raw)       # 标签之间的空白
-    compressed = re.sub(r'\s{2,}', ' ', compressed) # 标签内连续空白
+    # 6. Compress HTML: collapse whitespace/newlines, drop gaps between tags
+    compressed = re.sub(r'>\s+<', '><', raw)        # whitespace between tags
+    compressed = re.sub(r'\s{2,}', ' ', compressed)  # runs of whitespace inside tags
     return compressed.strip()
 
 
@@ -529,7 +529,7 @@ def extract_results(page: Page, engine_cfg: Dict, max_results: int = 10) -> List
             containers = found
             break
 
-    for container in containers:  # 不可先切 [:max_results]: require_title/去重会过滤掉前部容器(如 Google 顶部 hveid 壳), 预切会导致 0 结果
+    for container in containers:  # do NOT pre-slice [:max_results]: require_title/dedup filter out leading shells (e.g. Google's hveid wrappers), pre-slicing can yield 0 results
         if len(results) >= max_results:
             break
         title = ""
@@ -543,7 +543,7 @@ def extract_results(page: Page, engine_cfg: Dict, max_results: int = 10) -> List
 
         # URL
         link_sel = engine_cfg["link_sel"]
-        link_attr = engine_cfg.get("link_attr", "href")  # 默认取 href，可配置为 data-mdurl 等
+        link_attr = engine_cfg.get("link_attr", "href")  # defaults to href, configurable (e.g. data-mdurl)
         link_el = container.select_one(link_sel)
         if link_el:
             href = link_el.get(link_attr) or link_el.get("href", "")
@@ -567,7 +567,7 @@ def extract_results(page: Page, engine_cfg: Dict, max_results: int = 10) -> List
                     href = engine_cfg["base_url"] + href
                 url = href
 
-        # Snippet — 优先使用 snippet_nav 导航，fallback 到 snippet_sel
+        # Snippet — prefer snippet_nav traversal, fall back to snippet_sel
         snippet_nav = engine_cfg.get("snippet_nav", "")
         if snippet_nav == "title_h2_parent_next_sibling":
             # DuckDuckGo: a[data-testid=result-title-a] -> h2 -> div(title wrapper) -> next div = snippet
@@ -588,7 +588,7 @@ def extract_results(page: Page, engine_cfg: Dict, max_results: int = 10) -> List
         if engine_cfg.get("require_title") and not title:
             continue
         if title or url:
-            if url and any(url == r["url"] for r in results):  # 嵌套容器会重复框住同一条结果
+            if url and any(url == r["url"] for r in results):  # nested containers re-frame the same result
                 continue
             results.append({"title": title, "url": url, "snippet": snippet})
 
@@ -598,11 +598,12 @@ def extract_results(page: Page, engine_cfg: Dict, max_results: int = 10) -> List
 
 
 def _resolve_wrapped_urls(page: Page, results: List[Dict]) -> List[Dict]:
-    """还原 google 新版 /goto?url=<token> 包裹链接: 跟随一次重定向取最终 URL。
+    """Recover real URLs from google's new /goto?url=<token> wrappers: follow one redirect.
 
-    首选真实标签页 goto(完整浏览器指纹+JS 重定向都跟得住); context.request.get 会被
-    Google 风控识别为无指纹请求, 2026-09-30 实测 6/6 全挂, 只留作建标签失败时的兜底。
-    失败保留原 token URL, 不替换成更坏(串行 deep 仍能靠同源解析兜底抓取)。
+    Prefers a real tab goto (full browser fingerprint; survives both 30x and JS redirects);
+    context.request.get is flagged as fingerprint-less by Google's risk control (6/6 failed in
+    the 2026-09-30 field test) and is kept only as a fallback when tab creation fails.
+    On failure the original token URL is kept — serial deep crawl still resolves it same-origin.
     """
     def is_real_url(u: str) -> bool:
         return bool(u) and u.startswith("http") and "/goto" not in u \
@@ -626,7 +627,7 @@ def _resolve_wrapped_urls(page: Page, results: List[Dict]) -> List[Dict]:
                 try:
                     if resolver:
                         resolver.goto(href, wait_until="domcontentloaded", timeout=15000)
-                        # 服务端 30x 之外还可能是 JS 跳转, 短轮询直到 URL 离开壳
+                        # may be a JS redirect after the 30x; poll briefly until the URL leaves the wrapper
                         deadline = time.time() + 3
                         final = resolver.url
                         while not is_real_url(final) and time.time() < deadline:
@@ -642,7 +643,7 @@ def _resolve_wrapped_urls(page: Page, results: List[Dict]) -> List[Dict]:
                             break
                 except Exception:
                     pass
-            human_delay(250, 550)  # 逐条 goto 给 google 节流
+            human_delay(250, 550)  # pace the per-link gotos for google
     finally:
         if resolver:
             try:
@@ -655,8 +656,8 @@ def _resolve_wrapped_urls(page: Page, results: List[Dict]) -> List[Dict]:
 # ───────────────────── Browser Setup ──────────────────────────
 def _parse_proxy(proxy_url: str) -> dict:
     """
-    将代理 URL 解析为 Playwright proxy dict。
-    支持格式：
+    Parse a proxy URL into a Playwright proxy dict.
+    Supported formats:
       http://host:port
       http://user:pass@host:port
       socks5://host:port
@@ -675,8 +676,9 @@ def _parse_proxy(proxy_url: str) -> dict:
     return proxy
 
 
-# 按引擎地区匹配 locale/时区/语言: 中文查询配"美国浏览器"是异常指纹(2026-09-30 实测
-# baidu 连打后整场限流的诱因之一), 让请求看起来就是本地用户。
+# Match locale/timezone/languages to the engine's region: a "US browser" hitting Chinese
+# engines is an anomalous fingerprint (one trigger of baidu's session-wide rate limiting in the
+# 2026-09-30 field test) — make requests look like local users.
 REGION_I18N: Dict[str, Tuple[str, str, List[str]]] = {
     "baidu": ("zh-CN", "Asia/Shanghai", ["zh-CN", "zh"]),
     "sogou": ("zh-CN", "Asia/Shanghai", ["zh-CN", "zh"]),
@@ -691,7 +693,7 @@ DEFAULT_I18N: Tuple[str, str, List[str]] = ("en-US", "America/New_York", ["en-US
 
 
 def _browser_major(browser) -> str:
-    """browser.version 在 Playwright 各版本里是属性(实测 str); 兼容方法形态。"""
+    """browser.version is an attribute (str) in current Playwright; also tolerate a callable."""
     v = browser.version() if callable(getattr(browser, "version", None)) else getattr(browser, "version", "")
     try:
         return str(v).split(".")[0]
@@ -713,20 +715,21 @@ def create_context(
     engine_key: Optional[str] = None,
     state_path: Optional[Path] = None,
 ) -> Tuple[Browser, BrowserContext]:
-    """state_path: 显式会话文件(线程/车道隔离用, env 是进程级共享的对线程无效)。"""
+    """state_path: explicit session file for thread/lane isolation (the env var is process-wide, useless across threads)."""
     viewport = random.choice(VIEWPORTS)
     locale, tz, langs = REGION_I18N.get((engine_key or "").lower(), DEFAULT_I18N)
     accept_lang = _accept_lang(langs)
 
-    # PW_CHROME: 指定系统 Chrome 可执行文件路径(比自带 Chromium 指纹更"真实"); 未设则用默认
+    # PW_CHROME: path to a system Chrome binary (fingerprint "more real" than bundled Chromium); default when unset
     _chrome = os.environ.get("PW_CHROME")
     browser = playwright_instance.chromium.launch(
         headless=headless,
         executable_path=_chrome if _chrome and Path(_chrome).exists() else None,
         args=[
-            # 反自动化检测只需要 AutomationControlled; 之前关同源/站点隔离/放行混合内容
-            # 对"搜索引擎结果页抓取"毫无必要, 却在访问不可信结果链接时把浏览器变成裸奔(安全审计 2026-09-30 移除)。
-            # --no-sandbox 保留: 容器/root 环境兼容性需要, 非网页安全边界。
+            # AutomationControlled is all anti-automation needs here; previously disabling
+            # same-origin/site isolation and allowing mixed content was pointless for SERP
+            # crawling and stripped real defenses on untrusted result links (removed in the
+            # 2026-09-30 security audit). --no-sandbox stays: container/root compat, not a web boundary.
             "--no-sandbox",
             "--disable-blink-features=AutomationControlled",
             "--disable-dev-shm-usage",
@@ -734,8 +737,8 @@ def create_context(
         ],
     )
 
-    # UA/client-hints 从真实 Chromium 版本派生: 静态写死 v122 与运行时指纹矛盾,
-    # 本身就是检测特征, 且每月过期 (2026-09-30 审计)。
+    # UA/client-hints derived from the real Chromium version: hardcoding v122 contradicts
+    # the runtime fingerprint, is itself a detection tell, and goes stale monthly (2026-09-30 audit).
     major = _browser_major(browser)
     ua = random.choice([
         f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36",
@@ -771,14 +774,14 @@ def create_context(
 
     context = browser.new_context(**ctx_kwargs)
 
-    # Inject stealth script on every new page (navigator.languages 按引擎地区注入)
+    # Inject stealth script on every new page (navigator.languages injected per engine region)
     context.add_init_script(STEALTH_INIT_SCRIPT.replace("__NAV_LANGS__", json.dumps(langs)))
 
     return browser, context
 
 
 def _storage_state_path() -> Path:
-    # ASX_STATE_FILE 允许并发调用方各自隔离会话状态(多进程分引擎时用), 未设则维持原行为
+    # ASX_STATE_FILE lets concurrent callers isolate session state (multi-process per engine); original behavior when unset
     override = os.environ.get("ASX_STATE_FILE")
     if override:
         p = Path(override)
@@ -820,14 +823,14 @@ def check_google_captcha(page: Page) -> None:
 
     # URL-based detection: Google redirects to /sorry/ on CAPTCHA
     if "google.com/sorry/" in current_url or "sorry/index" in current_url:
-        print("[CAPTCHA] Google 检测到异常流量并要求验证码，无法继续搜索。", file=sys.stderr)
-        print("[CAPTCHA] 建议：更换网络/IP，或使用 --no-headless 手动完成验证后重试。", file=sys.stderr)
+        print("[CAPTCHA] Google detected unusual traffic and demands a CAPTCHA; cannot continue searching.", file=sys.stderr)
+        print("[CAPTCHA] Suggestion: change network/IP, or use --no-headless to solve the challenge manually and retry.", file=sys.stderr)
         sys.exit(2)
 
     # DOM-based detection
     captcha_signals = [
-        "#captcha-form",           # /sorry/ 页面表单
-        "#recaptcha",              # reCAPTCHA 容器
+        "#captcha-form",           # /sorry/ page form
+        "#recaptcha",              # reCAPTCHA container
         "iframe[src*='recaptcha']",# reCAPTCHA iframe
         "iframe[src*='google.com/recaptcha']",
         "div.g-recaptcha",
@@ -837,8 +840,8 @@ def check_google_captcha(page: Page) -> None:
         try:
             el = page.query_selector(sel)
             if el:
-                print("[CAPTCHA] Google 要求完成验证码，无法继续搜索。", file=sys.stderr)
-                print("[CAPTCHA] 建议：更换网络/IP，或使用 --no-headless 手动完成验证后重试。", file=sys.stderr)
+                print("[CAPTCHA] Google requires solving a CAPTCHA; cannot continue searching.", file=sys.stderr)
+                print("[CAPTCHA] Suggestion: change network/IP, or use --no-headless to solve the challenge manually and retry.", file=sys.stderr)
                 sys.exit(2)
         except Exception:
             pass
@@ -855,8 +858,8 @@ def check_google_captcha(page: Page) -> None:
         lower = body_text.lower()
         for phrase in captcha_phrases:
             if phrase in lower:
-                print("[CAPTCHA] Google 页面包含验证码提示，无法继续搜索。", file=sys.stderr)
-                print("[CAPTCHA] 建议：更换网络/IP，或使用 --no-headless 手动完成验证后重试。", file=sys.stderr)
+                print("[CAPTCHA] Google page contains CAPTCHA prompts; cannot continue searching.", file=sys.stderr)
+                print("[CAPTCHA] Suggestion: change network/IP, or use --no-headless to solve the challenge manually and retry.", file=sys.stderr)
                 sys.exit(2)
     except Exception:
         pass
@@ -864,8 +867,8 @@ def check_google_captcha(page: Page) -> None:
 
 # ──────────────── Deep Crawl (reuse page object) ──────────────
 def _html_to_text(html: str) -> str:
-    """清洗后的 HTML → 纯文本: LLM 消费方不需要尖括号, 省一半 token(2026-09-30 实测 deep 返回
-    开头整段是 <body><div><ul><li><a>财经... 导航噪音)。"""
+    """Cleaned HTML → plain text: LLM consumers don't need angle brackets, saves ~half the
+    tokens (2026-09-30 field test: deep output opened with a wall of <body><div><ul><li><a>财经... nav noise)."""
     soup = BeautifulSoup(html, "lxml")
     for junk in soup(["nav", "header", "footer", "aside", "form", "noscript"]):
         junk.decompose()
@@ -876,8 +879,9 @@ def _html_to_text(html: str) -> str:
 
 
 def _scroll_until_settled(page: Page) -> None:
-    """逐段滚到底并等懒加载收敛: 之前只滚半页, 长文章下半部分没进 DOM 就取内容 → 结果"截断"
-    (2026-09-30 修)。高度连续两轮不变即认为加载完, 上限 12 轮防爆页。"""
+    """Scroll down step by step until lazy-loading settles: previously only scrolled half a
+    viewport, so the bottom of long articles never entered the DOM → "truncated" results (fixed
+    2026-09-30). Considered loaded when height is unchanged two rounds in a row; capped at 12 rounds."""
     last_h = 0
     for _ in range(12):
         try:
@@ -889,7 +893,7 @@ def _scroll_until_settled(page: Page) -> None:
         if h == last_h:
             break
         last_h = h
-    # 回到顶部, 顺手给首屏后期渲染的 JS 一点时间
+    # Back to top; also gives late first-screen JS rendering a moment
     try:
         page.evaluate("window.scrollTo(0, 0)")
     except Exception:
@@ -897,7 +901,7 @@ def _scroll_until_settled(page: Page) -> None:
 
 
 def _crawl_url_with_page(page: Page, url: str, as_text: bool = True) -> str:
-    """复用已有 page 对象爬取一个 URL。默认返回纯文本(as_text), --deep-html 走旧版压缩 HTML。"""
+    """Crawl one URL reusing an existing page object. Plain text by default (as_text); --deep-html keeps legacy compressed HTML."""
     page.goto(url, wait_until="domcontentloaded", timeout=30000)
     human_delay(800, 1800)
     _scroll_until_settled(page)
@@ -907,9 +911,10 @@ def _crawl_url_with_page(page: Page, url: str, as_text: bool = True) -> str:
 
 
 def _deep_bucket_key(url: str) -> str:
-    """车道分桶键: 默认按域名(同域名同车道, 道内串行限速)。
-    但百度/Google 结果的整页链接常是跳转壳(baidu.com/link?url=…, google.com/goto?url=…),
-    按壳域名分桶会把全部结果挤进一条车道 → 假并行; 壳 URL 改用整条 URL 打散到各车道。"""
+    """Lane bucketing key: by domain (same domain → same lane → serial rate-limited).
+    But Baidu/Google result links are often redirect wrappers (baidu.com/link?url=…,
+    google.com/goto?url=…); bucketing by wrapper domain piles everything into one lane →
+    fake parallelism, so wrapper URLs are keyed by the full URL to spread across lanes."""
     try:
         pr = urllib.parse.urlparse(url)
         host = (pr.netloc or url).lower()
@@ -933,12 +938,12 @@ def _deep_crawl_parallel(
     workers: int,
     base_url: str = "",
 ) -> None:
-    """--deep-workers N: 并发爬取结果 URL 并回填 snippet(原地修改 results)。
+    """--deep-workers N: crawl result URLs concurrently, backfilling snippets (in-place on results).
 
-    车道模型同批量 --workers: Playwright sync API 的 page 不能跨线程复用,
-    故一条车道 = 一个线程 + 独立 playwright/browser/context。
-    按 _deep_bucket_key 分桶 crc32 → 道内串行限速, 道间并发。
-    deep 车道只读会话不写回, 无会话文件竞争。
+    Lane model same as batch --workers: Playwright sync API pages cannot be shared across
+    threads, so one lane = one thread + its own playwright/browser/context.
+    Buckets via crc32(_deep_bucket_key) → serial + rate-limited within a lane, parallel across lanes.
+    Deep lanes read the session but never write it back, so there is no state-file contention.
     """
     import zlib
     from concurrent.futures import ThreadPoolExecutor
@@ -948,7 +953,7 @@ def _deep_crawl_parallel(
         u = r.get("url")
         if not u:
             continue
-        # 相对链接(/goto?url= 等 SERP 壳)按 SERP 页 URL 补全, 新车道的 about:blank 解析不了
+        # Relative links (SERP shells like /goto?url=) are absolutized against the SERP URL; fresh about:blank lanes can't resolve them
         if u.startswith("/") and base_url:
             u = urllib.parse.urljoin(base_url, u)
         tasks.append((i, u))
@@ -978,11 +983,11 @@ def _deep_crawl_parallel(
                         n = done[0]
                     print(f"[DEEP] ({n}/{total}) Crawling {url} ...", file=sys.stderr)
                     try:
-                        results[idx]["url"] = url  # 回填补全后的绝对链接
+                        results[idx]["url"] = url  # backfill the absolutized link
                         results[idx]["snippet"] = _crawl_url_with_page(
                             page, url, as_text=not deep_html)
                     except Exception as e:
-                        print(f"[DEEP] 爬取失败: {e}", file=sys.stderr)
+                        print(f"[DEEP] crawl failed: {e}", file=sys.stderr)
                         results[idx]["snippet"] = ""
             finally:
                 ctx.close()
@@ -992,7 +997,7 @@ def _deep_crawl_parallel(
     with ThreadPoolExecutor(max_workers=len(non_empty)) as ex:
         futures = [ex.submit(run_lane, l) for l in non_empty]
         for f in futures:
-            f.result()  # run_lane 内部已逐 URL 兜底, 这里只暴露车道级死亡
+            f.result()  # run_lane already guards per-URL failures; this only surfaces lane-level deaths
 
 
 # ───────────────────── Search Function ────────────────────────
@@ -1046,7 +1051,7 @@ def do_search(
             if deep:
                 url_count = sum(1 for r in results if r.get("url"))
                 if deep_workers > 1 and url_count > 1:
-                    # 并行车道另起浏览器, 不占用 SERP page; --no-auto-close 时 SERP 页原样保留
+                    # Parallel lanes spin up their own browsers; the SERP page stays untouched (useful with --no-auto-close)
                     _deep_crawl_parallel(results, headless, proxy_url, engine_key,
                                          deep_html, deep_workers, base_url=page.url)
                 else:
@@ -1060,11 +1065,11 @@ def do_search(
                         try:
                             r["snippet"] = _crawl_url_with_page(page, r["url"], as_text=not deep_html)
                         except Exception as e:
-                            print(f"[DEEP] 爬取失败: {e}", file=sys.stderr)
+                            print(f"[DEEP] crawl failed: {e}", file=sys.stderr)
                             r["snippet"] = ""
 
             if not auto_close:
-                print("[INFO] 浏览器保持打开，按 Enter 键关闭...", file=sys.stderr)
+                print("[INFO] Keeping browser open, press Enter to close...", file=sys.stderr)
                 input()
 
         finally:
@@ -1098,14 +1103,14 @@ def do_crawl(
                 except Exception:
                     pass
 
-            # Scroll to trigger lazy-load (滚到底等收敛, 与 deep 车道同一修复)
+            # Scroll to trigger lazy-load (scroll-to-bottom until settled; same fix as deep lanes)
             _scroll_until_settled(page)
             human_delay(400, 800)
 
             html = page.content()
 
             if not auto_close:
-                print("[INFO] 浏览器保持打开，按 Enter 键关闭...", file=sys.stderr)
+                print("[INFO] Keeping browser open, press Enter to close...", file=sys.stderr)
                 input()
 
         finally:
@@ -1137,7 +1142,7 @@ def print_results(results: List[Dict], engine_name: str, query: str, fmt: str = 
             print(f"    URL: {r['url']}")
         if r["snippet"]:
             if deep:
-                # 深度模式：完整输出爬取内容，不截断
+                # Deep mode: print the full crawled content, no truncation
                 print(r["snippet"])
             else:
                 snippet = r["snippet"]
@@ -1149,7 +1154,7 @@ def print_results(results: List[Dict], engine_name: str, query: str, fmt: str = 
 
 # ──────────────────────── CLI ─────────────────────────────────
 def _search_one(ctx, engine_key: str, engine_cfg: Dict, query: str, max_res: int) -> List[Dict]:
-    """在既有 context 上跑一条查询(批量车道与旧路径共用)。"""
+    """Run one query on an existing context (shared by batch lanes and the legacy path)."""
     page = ctx.new_page()
     try:
         enc = urllib.parse.quote_plus(query)
@@ -1174,13 +1179,14 @@ def do_batch_search(
     proxy_url: Optional[str] = None,
     workers: int = 1,
 ) -> List[Dict]:
-    """批量查询, 引擎车道模型。单条失败不终止整批, 输出按输入顺序。
+    """Batch queries via the engine-lane model. A single failure never aborts the batch; output keeps input order.
 
-    items: [{"query", "engine"(默认 google), "num_results"(默认10), "tag"任意回显}]
-    workers<=1: 各引擎车道**依次**跑(共享默认会话文件, 行为最保守);
-    workers>1 : 一个引擎=一条车道=一个线程(各自 playwright/browser/独立会话文件),
-                道内查询串行(同引擎限速礼貌不变), 道间并发, 并发数再受 workers 信号量封顶。
-                注: Playwright sync API 要求每线程独立 playwright 实例, 故按线程而非协程。
+    items: [{"query", "engine" (default google), "num_results" (default 10), "tag" echoed back}]
+    workers<=1: engine lanes run **sequentially** (shared default session file, most conservative);
+    workers>1 : one engine = one lane = one thread (own playwright/browser/session file),
+                queries serial within a lane (same-engine pacing unchanged), lanes parallel,
+                concurrency additionally capped by a workers semaphore.
+                Note: Playwright sync API needs a per-thread playwright instance, hence threads not coroutines.
     """
     n = len(items)
     slots: List[Optional[Dict]] = [None] * n
@@ -1214,7 +1220,7 @@ def do_batch_search(
                             res = _search_one(ctx, eng, engine_cfg, it["query"],
                                               int(it.get("num_results") or 10))
                             mk(idx, res=res)
-                        except (Exception, SystemExit) as e:  # captcha 的 sys.exit(2) 在线程里是 SystemExit
+                        except (Exception, SystemExit) as e:  # captcha's sys.exit(2) surfaces as SystemExit inside a thread
                             mk(idx, err=f"{type(e).__name__}: {e}")
                         if k < len(idxs) - 1:
                             human_delay(1500, 3000)
@@ -1224,7 +1230,7 @@ def do_batch_search(
                     finally:
                         ctx.close()
                         browser.close()
-        except BaseException as e:  # 车道整体死亡(启动失败等): 未产出结果的名额记错误
+        except BaseException as e:  # whole lane died (launch failure etc.): mark every unfilled slot as errored
             for idx in idxs:
                 if slots[idx] is None:
                     mk(idx, err=f"lane died: {type(e).__name__}: {e}")
@@ -1331,14 +1337,15 @@ Examples:
         type=int,
         default=1,
         metavar="N",
-        help="--deep 并发度: 按目标域名分桶到 N 条车道(同域名道内串行限速, 道间并发, "
-             "一车道=一个线程+独立浏览器)。1=串行复用 SERP 页(默认); 建议 3~6",
+        help="Deep-crawl concurrency for --deep: bucket result URLs by target domain into N lanes "
+             "(serial + rate-limited within a lane, parallel across; one lane = one thread + own browser). "
+             "1=serial, reusing the SERP page (default); 3-6 recommended",
     )
     p.add_argument(
         "--as-text",
         action="store_true",
         default=False,
-        help="URL 爬取模式(-u): 返回纯文本(去标签/导航, LLM 友好); 默认仍是清洗后 HTML",
+        help="URL crawl mode (-u): return plain text (tags/nav stripped, LLM-friendly); cleaned HTML by default",
     )
     p.add_argument(
         "--no-auto-close",
@@ -1356,16 +1363,16 @@ Examples:
         "--batch-file",
         metavar="JSON",
         default=None,
-        help="批量模式: 跑完 JSON 数组 [{query, engine, num_results, tag}], "
-             "输出 JSONL(每行一条结果, 单条失败不终止整批), 免去逐条冷启动",
+        help="Batch mode: run a JSON array [{query, engine, num_results, tag}] in one session, "
+             "output JSONL (one result per line, single failures don't abort the batch), avoids per-query cold starts",
     )
     p.add_argument(
         "--workers",
         type=int,
         default=1,
         metavar="N",
-        help="批量模式并发度: 一引擎一车道(道内串行限速), workers 封顶同时车道数。"
-             "1=各引擎依次跑(默认); 建议 N≈批内不同引擎数(如 3 中英+3 国际=6)",
+        help="Batch-mode concurrency: one engine = one lane (serial + rate-limited within), workers caps lanes. "
+             "1=engines run sequentially (default); best N ~= number of distinct engines in the batch",
     )
     return p
 
@@ -1412,7 +1419,7 @@ def main() -> None:
     if args.batch_file:
         items = json.loads(Path(args.batch_file).read_text(encoding="utf-8"))
         if not isinstance(items, list):
-            print("[ERROR] --batch-file 需要 JSON 数组", file=sys.stderr)
+            print("[ERROR] --batch-file requires a JSON array", file=sys.stderr)
             sys.exit(1)
         out = do_batch_search(items, headless=args.headless, proxy_url=args.proxy, workers=args.workers)
         for o in out:
@@ -1436,11 +1443,12 @@ def main() -> None:
         print(f"[ERROR] Unknown engine '{args.engine}'. Use --list-engines to see options.")
         sys.exit(1)
 
-    # 防呆: --deep-workers/--deep-html 只在 --deep 下有效, 忘带 --deep 时静默退化成 200 字摘要
-    # 容易被误读成"返回内容被截断"(2026-09-30 用户实测踩中), 显式警告。
+    # Fool-proof: --deep-workers/--deep-html only do something with --deep; without it the tool
+    # silently degrades to 200-char snippets, easily misread as "output truncated"
+    # (hit by a real user on 2026-09-30). Warn explicitly.
     if not args.deep and (args.deep_workers != 1 or args.deep_html):
-        print("[WARN] --deep-workers/--deep-html 需配合 --deep 才生效; "
-              "当前未带 --deep, 返回的是搜索结果页摘要(非网页正文)。", file=sys.stderr)
+        print("[WARN] --deep-workers/--deep-html require --deep to take effect; "
+              "without --deep you get results-page snippets, not full page content.", file=sys.stderr)
 
     print(f"[INFO] Searching '{args.query}' on {engine_cfg['name']} ...", file=sys.stderr)
 
@@ -1459,8 +1467,8 @@ def main() -> None:
     fmt = "json" if args.output_json else "text"
     print_results(results, engine_cfg["name"], args.query, fmt=fmt, deep=args.deep)
 
-    # 退出码约定: 0=有结果, 2=CAPTCHA, 3=查询成功但 0 条(引擎限流/真无结果)。
-    # 调用方(如多引擎调度器)可据此把"空"当软失败去换引擎, 无需解析输出猜。
+    # Exit-code contract: 0=results, 2=CAPTCHA, 3=query OK but 0 results (engine rate-limit / genuinely empty).
+    # Callers (multi-engine schedulers) can treat "empty" as a soft-fail and rotate engines without parsing output.
     if not results:
         print("[INFO] 0 results (soft-fail, exit 3)", file=sys.stderr)
         sys.exit(3)
