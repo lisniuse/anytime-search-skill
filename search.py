@@ -398,15 +398,10 @@ STEALTH_INIT_SCRIPT = """
 """
 
 # ──────────────────────── User Agents ─────────────────────────
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15",
-]
+# 已弃用: UA/Sec-Ch-Ua 现由 create_context / _make_context_for 从 browser.version()
+# 真实派生 —— 静态写死 Chrome/120-122 与运行时引擎版本自相矛盾, 本身就是检测信号,
+# 且每月随 Chromium 更新过期。保留空列表仅为外部 import 兼容。
+USER_AGENTS: List[str] = []
 
 VIEWPORTS = [
     {"width": 1920, "height": 1080},
@@ -651,6 +646,15 @@ REGION_I18N: Dict[str, Tuple[str, str, List[str]]] = {
 DEFAULT_I18N: Tuple[str, str, List[str]] = ("en-US", "America/New_York", ["en-US", "en"])
 
 
+def _browser_major(browser) -> str:
+    """browser.version 在 Playwright 各版本里是属性(实测 str); 兼容方法形态。"""
+    v = browser.version() if callable(getattr(browser, "version", None)) else getattr(browser, "version", "")
+    try:
+        return str(v).split(".")[0]
+    except Exception:
+        return "122"
+
+
 def _accept_lang(languages: List[str]) -> str:
     parts = [languages[0]] + [f"{l};q=0.9" for l in languages[1:]]
     if not any(l.startswith("en") for l in languages):
@@ -664,7 +668,6 @@ def create_context(
     proxy_url: Optional[str] = None,
     engine_key: Optional[str] = None,
 ) -> Tuple[Browser, BrowserContext]:
-    ua = random.choice(USER_AGENTS)
     viewport = random.choice(VIEWPORTS)
     locale, tz, langs = REGION_I18N.get((engine_key or "").lower(), DEFAULT_I18N)
     accept_lang = _accept_lang(langs)
@@ -682,6 +685,15 @@ def create_context(
         ],
     )
 
+    # UA/client-hints 从真实 Chromium 版本派生: 静态写死 v122 与运行时指纹矛盾,
+    # 本身就是检测特征, 且每月过期 (2026-09-30 审计)。
+    major = _browser_major(browser)
+    ua = random.choice([
+        f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36",
+        f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36",
+        f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36",
+    ])
+
     ctx_kwargs: dict = dict(
         user_agent=ua,
         viewport=viewport,
@@ -693,7 +705,7 @@ def create_context(
             "Accept-Language": accept_lang,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Encoding": "gzip, deflate, br",
-            "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            "Sec-Ch-Ua": f'"Chromium";v="{major}", "Not(A:Brand";v="24", "Google Chrome";v="{major}"',
             "Sec-Ch-Ua-Mobile": "?0",
             "Sec-Ch-Ua-Platform": '"Windows"',
             "Sec-Fetch-Dest": "document",
@@ -1024,11 +1036,19 @@ def do_batch_search(
 def _make_context_for(browser, proxy_url, langs, locale, tz) -> BrowserContext:
     """为已存在的 browser 追加一个指定 locale 的 context(批量模式跨 locale 分组用)。"""
     accept_lang = _accept_lang(langs)
+    major = _browser_major(browser)  # 与 create_context 同源: UA 派生自真实版本
+    ua = random.choice([
+        f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36",
+        f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36",
+        f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36",
+    ])
     kw = dict(
-        user_agent=random.choice(USER_AGENTS),
+        user_agent=ua,
         viewport=random.choice(VIEWPORTS),
         locale=locale, timezone_id=tz,
         extra_http_headers={"Accept-Language": accept_lang,
+                            "Sec-Ch-Ua": f'"Chromium";v="{major}", "Not(A:Brand";v="24", "Google Chrome";v="{major}"',
+                            "Sec-Ch-Ua-Mobile": "?0",
                             "Upgrade-Insecure-Requests": "1"},
         storage_state=_load_storage_state(),
     )
