@@ -815,13 +815,26 @@ def check_google_captcha(page: Page) -> None:
 
 
 # ──────────────── Deep Crawl (reuse page object) ──────────────
-def _crawl_url_with_page(page: Page, url: str) -> str:
-    """复用已有 page 对象爬取一个 URL，返回清洗后的压缩 HTML。"""
+def _html_to_text(html: str) -> str:
+    """清洗后的 HTML → 纯文本: LLM 消费方不需要尖括号, 省一半 token(2026-09-30 实测 deep 返回
+    开头整段是 <body><div><ul><li><a>财经... 导航噪音)。"""
+    soup = BeautifulSoup(html, "lxml")
+    for junk in soup(["nav", "header", "footer", "aside", "form", "noscript"]):
+        junk.decompose()
+    text = soup.get_text("\n")
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{2,}", "\n", text)
+    return text.strip()
+
+
+def _crawl_url_with_page(page: Page, url: str, as_text: bool = True) -> str:
+    """复用已有 page 对象爬取一个 URL。默认返回纯文本(as_text), --deep-html 走旧版压缩 HTML。"""
     page.goto(url, wait_until="domcontentloaded", timeout=30000)
     human_delay(800, 1800)
     page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
     human_delay(300, 700)
-    return clean_html(page.content())
+    cleaned = clean_html(page.content())
+    return _html_to_text(cleaned) if as_text else cleaned
 
 
 # ───────────────────── Search Function ────────────────────────
@@ -833,6 +846,7 @@ def do_search(
     output_format: str = "text",
     auto_close: bool = True,
     deep: bool = False,
+    deep_html: bool = False,
     proxy_url: Optional[str] = None,
 ) -> List[Dict]:
     engine_cfg = ENGINES.get(engine_key.lower())
@@ -879,7 +893,7 @@ def do_search(
                         file=sys.stderr,
                     )
                     try:
-                        r["snippet"] = _crawl_url_with_page(page, r["url"])
+                        r["snippet"] = _crawl_url_with_page(page, r["url"], as_text=not deep_html)
                     except Exception as e:
                         print(f"[DEEP] 爬取失败: {e}", file=sys.stderr)
                         r["snippet"] = ""
@@ -1127,7 +1141,13 @@ Examples:
         "--deep",
         action="store_true",
         default=False,
-        help="Deep search: crawl each result URL and replace snippet with full page content",
+        help="Deep search: crawl each result URL and replace snippet with full page **plain text** (LLM-friendly, strips nav/aside/footer)",
+    )
+    p.add_argument(
+        "--deep-html",
+        action="store_true",
+        default=False,
+        help="With --deep: keep the old cleaned-compressed HTML output instead of plain text",
     )
     p.add_argument(
         "--no-auto-close",
@@ -1226,6 +1246,7 @@ def main() -> None:
         max_results=args.num_results,
         auto_close=args.auto_close,
         deep=args.deep,
+        deep_html=args.deep_html,
         proxy_url=args.proxy,
     )
 
