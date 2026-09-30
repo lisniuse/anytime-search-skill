@@ -1,11 +1,11 @@
 ---
 name: anytime-search
-description: Use a stealth Playwright browser to search 18+ search engines (Google, Bing, Baidu, DuckDuckGo, etc.) or crawl any URL. Invoke when the user asks you to search the web, look something up online, fetch a webpage, or when web search results would help answer a question.
+description: Use a stealth Playwright browser to search multiple engines (realistically stable: baidu/sogou/360 for Chinese, brave/google/bing for English) or crawl any URL. Supports batch mode. Invoke when the user asks you to search the web, look something up online, fetch a webpage, or when web search results would help answer a question.
 ---
 
 # Anytime Search Skill
 
-Stealth browser search and web crawling tool using Playwright. Supports 18+ search engines with anti-bot detection evasion.
+Stealth browser search and web crawling tool using Playwright, with anti-bot evasion, batch mode, and engine-aware locale.
 
 ## Setup (one-time)
 
@@ -18,7 +18,7 @@ playwright install chromium
 ## Search
 
 ```bash
-python D:/dev/github/anytime-search-skill/search.py -q "<query>" [options]
+PYTHONIOENCODING=utf-8 python D:/dev/github/anytime-search-skill/search.py -q "<query>" [options]
 ```
 
 ### Key options
@@ -26,73 +26,69 @@ python D:/dev/github/anytime-search-skill/search.py -q "<query>" [options]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `-q` / `--query` | — | Search query (required for search mode) |
-| `-e` / `--engine` | `google` | Engine name: `google`/`g`, `bing`/`b`, `baidu`, `duckduckgo`/`ddg`, `yahoo`, `yandex`, `brave`, `sogou`, `360`, `naver`, etc. |
+| `-e` / `--engine` | `google` | See engine table below |
 | `-n` / `--num-results` | `10` | Max results to return |
 | `--json` | off | Output as JSON array `[{title, url, snippet}]` |
-| `--deep` | off | Crawl each result URL and return full page content instead of snippet |
-| `--proxy` | — | Proxy URL, e.g. `http://127.0.0.1:7890` or `socks5://user:pass@host:port` |
-| `--no-headless` | off | Show browser window (useful for manual CAPTCHA solving) |
+| `--deep` | off | Crawl each result URL, return full page content instead of snippet |
+| `-u` / `--url` | — | Crawl a URL directly (returns cleaned HTML body; `--wait-for CSS` for SPAs) |
+| `--proxy` | — | e.g. `http://127.0.0.1:7890` or `socks5://user:pass@host:port` |
+| `--batch-file` | — | Batch mode, see below |
+| `--no-headless` | off | Show browser window (manual CAPTCHA solving) |
+| `--clear-session` | — | Reset cookies/session and exit |
 
-### Examples
+### Exit codes (contract for callers/schedulers)
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success with results |
+| `1` | Bad arguments/config |
+| `2` | CAPTCHA encountered (switch engine or `--no-headless`) |
+| `3` | **Query succeeded but 0 results** (engine throttling soft-fail, or genuinely empty) — retry on another engine |
+
+### Engines: realistic availability (2026-09-30 measured)
+
+The code covers 18+ engines, but only ~6 are reliably working. Pick accordingly:
+
+- **Chinese queries (no proxy needed):** `baidu`, `sogou`, `360` ✅
+  - baidu returns empty (exit 3) after ~20 rapid consecutive queries — spread load or rotate engines.
+  - `shenma` ❌ dead.
+- **English queries (needs proxy, e.g. 7890):** `google`, `bing`, `brave` ✅
+  - `duckduckgo` / `startpage` / `ecosia` ❌ currently return empty — avoid.
+- Locale/timezone/Accept-Language are auto-injected per engine region (zh-CN for Baidu/Sogou/360, etc.) — no action needed.
+
+### Recommended query style
+
+Narrow, concrete combinations beat vague words:
+`{origin/chokepoint} {subject} {trigger} {year}` — e.g. `泰国 橡胶 厄尔尼诺 干旱 减产 2026`,
+`Guinea bauxite export quota 2026`. Generic words ("black swan", "supply disruption") return junk.
+
+## Batch mode
+
+One browser session for many queries (no per-query cold-start). Input: JSON array; output: JSONL (one object per line: `{index, query, engine, results, error, tag}`); a failed query never aborts the batch.
 
 ```bash
-# Default Google search
-python D:/dev/github/anytime-search-skill/search.py -q "Python asyncio tutorial"
-
-# Use Bing, return 5 results as JSON
-python D:/dev/github/anytime-search-skill/search.py -q "latest news" -e bing -n 5 --json
-
-# Search Baidu (Chinese)
-python D:/dev/github/anytime-search-skill/search.py -q "Python 异步编程" -e baidu
-
-# Deep search: get full page content for each result
-python D:/dev/github/anytime-search-skill/search.py -q "openai api docs" --deep
+cat > queries.json <<'EOF'
+[
+  {"query": "泰国 橡胶 割胶 降雨 2026", "engine": "sogou", "num_results": 8, "tag": "ru"},
+  {"query": "opec supply cut 2026", "engine": "google", "num_results": 6, "tag": "sc"}
+]
+EOF
+PYTHONIOENCODING=utf-8 python D:/dev/github/anytime-search-skill/search.py --batch-file queries.json --proxy http://127.0.0.1:7890
 ```
 
-## Crawl a URL
+## Concurrency
+
+To run queries in parallel safely, give each process its own session state file:
 
 ```bash
-python D:/dev/github/anytime-search-skill/search.py -u <URL> [--wait-for "<CSS_SELECTOR>"]
+ASX_STATE_FILE=./data/states/zh_sogou.json python search.py -q "..." -e sogou
 ```
 
-Returns cleaned HTML body (scripts, styles, images removed). Use `--wait-for` for SPAs.
+Rule of thumb: parallel ACROSS engines, serial WITHIN one engine (respect its rate).
+`PW_CHROME=<path>` optionally launches with your system Chrome instead of bundled Chromium (more realistic fingerprint).
 
-```bash
-# Crawl a page
-python D:/dev/github/anytime-search-skill/search.py -u https://example.com
+## Windows pitfalls
 
-# Wait for dynamic content to load
-python D:/dev/github/anytime-search-skill/search.py -u https://spa-site.com --wait-for ".main-content"
-```
-
-## Supported engines
-
-**Global:** `google`, `bing`, `duckduckgo`, `yahoo`, `yandex`, `ecosia`, `startpage`, `brave`, `ask`, `dogpile`, `searx`
-**China:** `baidu`, `sogou`, `360`, `shenma`
-**East Asia:** `naver`, `yahoo_jp`
-**Privacy:** `metager`, `swisscows`
-**Russia:** `mail`
-**Shortcuts:** `g`=google, `b`=bing, `ddg`=duckduckgo
-
-Run `python D:/dev/github/anytime-search-skill/search.py --list-engines` for the full list.
-
-## Output format
-
-**Text (default):**
-```
-[1] Page Title
-    URL: https://...
-    Snippet text...
-```
-
-**JSON (`--json`):**
-```json
-[{"title": "...", "url": "https://...", "snippet": "..."}]
-```
-
-## CAPTCHA handling
-
-If Google returns a CAPTCHA, the script exits with code `2` and prints suggestions. Try:
-1. Switch engine: `-e bing` or `-e duckduckgo`
-2. Run with `--no-headless` to manually solve it
-3. Run `--clear-session` to reset cookies and retry
+- **GBK console**: always set `PYTHONIOENCODING=utf-8`, or use `--json` (pure ASCII-safe piping).
+- Large `--deep`/`-u` outputs may be truncated by the tool harness into a temp file — read that file.
+- Google CAPTCHA → exit 2 → switch engine (`-e bing`) or `--no-headless`, or `--clear-session`.
