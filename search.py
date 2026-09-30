@@ -672,12 +672,11 @@ def create_context(
     browser = playwright_instance.chromium.launch(
         headless=headless,
         args=[
+            # 反自动化检测只需要 AutomationControlled; 之前关同源/站点隔离/放行混合内容
+            # 对"搜索引擎结果页抓取"毫无必要, 却在访问不可信结果链接时把浏览器变成裸奔(安全审计 2026-09-30 移除)。
+            # --no-sandbox 保留: 容器/root 环境兼容性需要, 非网页安全边界。
             "--no-sandbox",
             "--disable-blink-features=AutomationControlled",
-            "--disable-features=IsolateOrigins,site-per-process",
-            "--disable-site-isolation-trials",
-            "--disable-web-security",
-            "--allow-running-insecure-content",
             "--disable-dev-shm-usage",
             f"--lang={langs[0]}",
         ],
