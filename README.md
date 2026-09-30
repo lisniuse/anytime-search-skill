@@ -1,6 +1,6 @@
-# Anytime Search Skill
+# serpkit
 
-基于 [Playwright](https://playwright.dev/python/) 的隐身浏览器搜索工具，代码覆盖 18+ 个搜索引擎（当前稳定可用约 6 个，见[实测可用性矩阵](#实测可用性矩阵重要)）、反爬虫检测规避、网页内容爬取、批量模式，结果输出到控制台。
+隐身浏览器搜索 / 抓取 **CLI**（Python + Playwright）。代码覆盖 18+ 个搜索引擎（当前稳定可用约 6 个，见[实测可用性矩阵](#实测可用性矩阵重要)），支持反爬规避、URL 抓取、批量车道并发、纯文本输出；结果打到 stdout，供任何脚本/agent/终端使用者消费。**本仓库只做 CLI，不做任何平台（Claude Code skill / MCP / IDE）的集成**——集成方式由使用者自定。
 
 ---
 
@@ -42,8 +42,8 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/your-username/anytime-search-skill.git
-cd anytime-search-skill
+git clone git@github.com:lisniuse/serpkit.git
+cd serpkit
 ```
 
 ### 2. 安装 Python 依赖
@@ -449,9 +449,10 @@ python search.py -u https://news-site.com/article/123 --wait-for ".article-body"
 ```
 
 程序退出码为 `2`，可在脚本中区分：
-- `0`：正常退出
-- `1`：参数错误
+- `0`：正常退出且有结果
+- `1`：参数/配置错误
 - `2`：检测到验证码
+- `3`：查询成功但 0 结果（限流软失败，建议换引擎重试）
 
 **遇到验证码的解决方案：**
 
@@ -465,8 +466,8 @@ python search.py -u https://news-site.com/article/123 --wait-for ".article-body"
 ## 项目结构
 
 ```
-anytime-search-skill/
-├── search.py           # 主脚本
+serpkit/
+├── search.py           # 主脚本(CLI 全部实现, 单文件)
 ├── requirements.txt    # Python 依赖
 ├── .gitignore
 ├── README.md

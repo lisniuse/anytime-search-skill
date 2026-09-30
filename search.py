@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Anytime Search Skill - Stealth browser search via Playwright
+serpkit - stealth browser search & crawl CLI (Playwright)
 Usage:
   python search.py -q "search query"
   python search.py -q "search query" -e bing
