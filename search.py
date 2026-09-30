@@ -398,7 +398,7 @@ STEALTH_INIT_SCRIPT = """
 """
 
 # ──────────────────────── User Agents ─────────────────────────
-# 已弃用: UA/Sec-Ch-Ua 现由 create_context / _make_context_for 从 browser.version()
+# 已弃用: UA/Sec-Ch-Ua 现由 create_context 从 browser.version()
 # 真实派生 —— 静态写死 Chrome/120-122 与运行时引擎版本自相矛盾, 本身就是检测信号,
 # 且每月随 Chromium 更新过期。保留空列表仅为外部 import 兼容。
 USER_AGENTS: List[str] = []
@@ -667,7 +667,9 @@ def create_context(
     headless: bool,
     proxy_url: Optional[str] = None,
     engine_key: Optional[str] = None,
+    state_path: Optional[Path] = None,
 ) -> Tuple[Browser, BrowserContext]:
+    """state_path: 显式会话文件(线程/车道隔离用, env 是进程级共享的对线程无效)。"""
     viewport = random.choice(VIEWPORTS)
     locale, tz, langs = REGION_I18N.get((engine_key or "").lower(), DEFAULT_I18N)
     accept_lang = _accept_lang(langs)
@@ -717,7 +719,7 @@ def create_context(
             "Sec-Fetch-User": "?1",
             "Upgrade-Insecure-Requests": "1",
         },
-        storage_state=_load_storage_state(),
+        storage_state=_load_storage_state(state_path),
     )
 
     if proxy_url:
@@ -741,8 +743,8 @@ def _storage_state_path() -> Path:
     return USER_DATA_DIR / "storage_state.json"
 
 
-def _load_storage_state() -> Optional[dict]:
-    p = _storage_state_path()
+def _load_storage_state(path: Optional[Path] = None) -> Optional[dict]:
+    p = path or _storage_state_path()
     if p.exists():
         try:
             with open(p, "r", encoding="utf-8") as f:
@@ -752,10 +754,12 @@ def _load_storage_state() -> Optional[dict]:
     return None
 
 
-def _save_storage_state(context: BrowserContext) -> None:
+def _save_storage_state(context: BrowserContext, path: Optional[Path] = None) -> None:
     try:
         state = context.storage_state()
-        with open(_storage_state_path(), "w", encoding="utf-8") as f:
+        p = path or _storage_state_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
@@ -917,6 +921,7 @@ def do_crawl(
     wait_for: Optional[str] = None,
     auto_close: bool = True,
     proxy_url: Optional[str] = None,
+    as_text: bool = False,
 ) -> str:
     with sync_playwright() as pw:
         browser, context = create_context(pw, headless, proxy_url=proxy_url)
@@ -947,7 +952,8 @@ def do_crawl(
             context.close()
             browser.close()
 
-    return clean_html(html)
+    cleaned = clean_html(html)
+    return _html_to_text(cleaned) if as_text else cleaned
 
 
 # ──────────────────────── Output ──────────────────────────────
@@ -981,99 +987,109 @@ def print_results(results: List[Dict], engine_name: str, query: str, fmt: str = 
 
 
 # ──────────────────────── CLI ─────────────────────────────────
+def _search_one(ctx, engine_key: str, engine_cfg: Dict, query: str, max_res: int) -> List[Dict]:
+    """在既有 context 上跑一条查询(批量车道与旧路径共用)。"""
+    page = ctx.new_page()
+    try:
+        enc = urllib.parse.quote_plus(query)
+        page.goto(engine_cfg["search_url"].format(query=enc), wait_until="domcontentloaded", timeout=30000)
+        human_delay(800, 1600)
+        if engine_key in ("google", "g"):
+            check_google_captcha(page)
+        try:
+            page.wait_for_selector(engine_cfg.get("wait_for", "body"), timeout=15000)
+        except Exception:
+            pass
+        human_delay(400, 900)
+        return extract_results(page, engine_cfg, max_res)
+    finally:
+        page.close()
+
+
 def do_batch_search(
     items: List[Dict],
     headless: bool = True,
     auto_close: bool = True,
     proxy_url: Optional[str] = None,
+    workers: int = 1,
 ) -> List[Dict]:
-    """批量查询: 全程只启动一个 browser, 按引擎 locale 分组复用 context。
+    """批量查询, 引擎车道模型。单条失败不终止整批, 输出按输入顺序。
 
-    items: [{"query": str, "engine": str(默认 google), "num_results": int(默认10), "tag": 任意回显字段}]
-    返回: [{"index","query","engine","results","error"}], 与单次调用不同——单条失败不终止整批。
-    动机: 逐条 CLI 每条都付 5-8s 浏览器冷启动, 批量把 44 条查询的固定开销从 ~5min 压到 ~30s。
+    items: [{"query", "engine"(默认 google), "num_results"(默认10), "tag"任意回显}]
+    workers<=1: 各引擎车道**依次**跑(共享默认会话文件, 行为最保守);
+    workers>1 : 一个引擎=一条车道=一个线程(各自 playwright/browser/独立会话文件),
+                道内查询串行(同引擎限速礼貌不变), 道间并发, 并发数再受 workers 信号量封顶。
+                注: Playwright sync API 要求每线程独立 playwright 实例, 故按线程而非协程。
     """
-    results_out: List[Dict] = []
-    with sync_playwright() as pw:
-        browser = None
-        contexts: Dict[tuple, BrowserContext] = {}  # (locale,tz) -> context
+    n = len(items)
+    slots: List[Optional[Dict]] = [None] * n
+
+    def mk(idx: int, res: Optional[List[Dict]] = None, err: Optional[str] = None) -> None:
+        it = items[idx]
+        slots[idx] = {"index": idx, "query": it.get("query"),
+                      "engine": (it.get("engine") or "google").lower(),
+                      "results": res or [], "error": err, "tag": it.get("tag")}
+
+    by_engine: Dict[str, List[int]] = {}
+    for idx, item in enumerate(items):
+        eng = (item.get("engine") or "google").lower()
+        if not item.get("query") or eng not in ENGINES:
+            mk(idx, err="bad item")
+            continue
+        by_engine.setdefault(eng, []).append(idx)
+
+    base_state = _storage_state_path()
+
+    def run_lane(eng: str, idxs: List[int], state_path: Optional[Path]) -> None:
+        engine_cfg = ENGINES[eng]
         try:
-            for idx, item in enumerate(items):
-                query = item.get("query")
-                engine_key = (item.get("engine") or "google").lower()
-                max_res = int(item.get("num_results") or 10)
-                engine_cfg = ENGINES.get(engine_key)
-                if not query or not engine_cfg:
-                    results_out.append({"index": idx, "query": query, "engine": engine_key,
-                                        "results": [], "error": "bad item"})
-                    continue
-                locale, tz, langs = REGION_I18N.get(engine_key, DEFAULT_I18N)
-                ck = (locale, tz)
+            with sync_playwright() as pw:
+                browser, ctx = create_context(pw, headless, proxy_url=proxy_url,
+                                              engine_key=eng, state_path=state_path)
                 try:
-                    if browser is None:
-                        browser, first_ctx = create_context(pw, headless, proxy_url=proxy_url, engine_key=engine_key)
-                        contexts[ck] = first_ctx
-                    if ck not in contexts:
-                        contexts[ck] = _make_context_for(browser, proxy_url, langs, locale, tz)
-                    ctx = contexts[ck]
-                    page = ctx.new_page()
-                    try:
-                        enc = urllib.parse.quote_plus(query)
-                        page.goto(engine_cfg["search_url"].format(query=enc),
-                                  wait_until="domcontentloaded", timeout=30000)
-                        human_delay(800, 1600)
-                        if engine_key in ("google", "g"):
-                            check_google_captcha(page)
+                    for k, idx in enumerate(idxs):
+                        it = items[idx]
                         try:
-                            page.wait_for_selector(engine_cfg.get("wait_for", "body"), timeout=15000)
-                        except Exception:
-                            pass
-                        human_delay(400, 900)
-                        res = extract_results(page, engine_cfg, max_res)
-                        results_out.append({"index": idx, "query": query, "engine": engine_key,
-                                            "results": res, "error": None, "tag": item.get("tag")})
+                            res = _search_one(ctx, eng, engine_cfg, it["query"],
+                                              int(it.get("num_results") or 10))
+                            mk(idx, res=res)
+                        except (Exception, SystemExit) as e:  # captcha 的 sys.exit(2) 在线程里是 SystemExit
+                            mk(idx, err=f"{type(e).__name__}: {e}")
+                        if k < len(idxs) - 1:
+                            human_delay(1500, 3000)
+                finally:
+                    try:
+                        _save_storage_state(ctx, state_path)
                     finally:
-                        page.close()
-                except Exception as e:
-                    results_out.append({"index": idx, "query": query, "engine": engine_key,
-                                        "results": [], "error": f"{type(e).__name__}: {e}",
-                                        "tag": item.get("tag")})
-        finally:
-            for c in contexts.values():
-                try:
-                    _save_storage_state(c)
-                    c.close()
-                except Exception:
-                    pass
-            if browser:
-                browser.close()
-    return results_out
+                        ctx.close()
+                        browser.close()
+        except BaseException as e:  # 车道整体死亡(启动失败等): 未产出结果的名额记错误
+            for idx in idxs:
+                if slots[idx] is None:
+                    mk(idx, err=f"lane died: {type(e).__name__}: {e}")
 
+    if workers <= 1 or len(by_engine) == 1:
+        for eng, idxs in by_engine.items():
+            run_lane(eng, idxs, None)
+    else:
+        import threading
+        sem = threading.Semaphore(max(1, int(workers)))
+        threads = []
+        for eng, idxs in by_engine.items():
+            sp = base_state.parent / f"{base_state.stem}_{eng}{base_state.suffix}"
 
-def _make_context_for(browser, proxy_url, langs, locale, tz) -> BrowserContext:
-    """为已存在的 browser 追加一个指定 locale 的 context(批量模式跨 locale 分组用)。"""
-    accept_lang = _accept_lang(langs)
-    major = _browser_major(browser)  # 与 create_context 同源: UA 派生自真实版本
-    ua = random.choice([
-        f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36",
-        f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36",
-        f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36",
-    ])
-    kw = dict(
-        user_agent=ua,
-        viewport=random.choice(VIEWPORTS),
-        locale=locale, timezone_id=tz,
-        extra_http_headers={"Accept-Language": accept_lang,
-                            "Sec-Ch-Ua": f'"Chromium";v="{major}", "Not(A:Brand";v="24", "Google Chrome";v="{major}"',
-                            "Sec-Ch-Ua-Mobile": "?0",
-                            "Upgrade-Insecure-Requests": "1"},
-        storage_state=_load_storage_state(),
-    )
-    if proxy_url:
-        kw["proxy"] = _parse_proxy(proxy_url)
-    ctx = browser.new_context(**kw)
-    ctx.add_init_script(STEALTH_INIT_SCRIPT.replace("__NAV_LANGS__", json.dumps(langs)))
-    return ctx
+            def guard(eng=eng, idxs=idxs, sp=sp):
+                with sem:
+                    run_lane(eng, idxs, sp)
+
+            t = threading.Thread(target=guard, name=f"asx-{eng}", daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+
+    return [s for s in slots if s is not None]
+
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1150,6 +1166,12 @@ Examples:
         help="With --deep: keep the old cleaned-compressed HTML output instead of plain text",
     )
     p.add_argument(
+        "--as-text",
+        action="store_true",
+        default=False,
+        help="URL 爬取模式(-u): 返回纯文本(去标签/导航, LLM 友好); 默认仍是清洗后 HTML",
+    )
+    p.add_argument(
         "--no-auto-close",
         dest="auto_close",
         action="store_false",
@@ -1165,8 +1187,16 @@ Examples:
         "--batch-file",
         metavar="JSON",
         default=None,
-        help="批量模式: 一个 browser 跑完 JSON 数组 [{query, engine, num_results, tag}], "
+        help="批量模式: 跑完 JSON 数组 [{query, engine, num_results, tag}], "
              "输出 JSONL(每行一条结果, 单条失败不终止整批), 免去逐条冷启动",
+    )
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help="批量模式并发度: 一引擎一车道(道内串行限速), workers 封顶同时车道数。"
+             "1=各引擎依次跑(默认); 建议 N≈批内不同引擎数(如 3 中英+3 国际=6)",
     )
     return p
 
@@ -1215,7 +1245,7 @@ def main() -> None:
         if not isinstance(items, list):
             print("[ERROR] --batch-file 需要 JSON 数组", file=sys.stderr)
             sys.exit(1)
-        out = do_batch_search(items, headless=args.headless, proxy_url=args.proxy)
+        out = do_batch_search(items, headless=args.headless, proxy_url=args.proxy, workers=args.workers)
         for o in out:
             print(json.dumps(o, ensure_ascii=False))
         sys.exit(0 if any(o.get("results") for o in out) else 3)
@@ -1223,7 +1253,7 @@ def main() -> None:
     if args.url:
         # URL crawl mode
         print(f"[INFO] Crawling: {args.url}", file=sys.stderr)
-        html = do_crawl(args.url, headless=args.headless, wait_for=args.wait_for, auto_close=args.auto_close, proxy_url=args.proxy)
+        html = do_crawl(args.url, headless=args.headless, wait_for=args.wait_for, auto_close=args.auto_close, proxy_url=args.proxy, as_text=args.as_text)
         print(html)
         return
 
