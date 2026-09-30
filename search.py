@@ -953,6 +953,93 @@ def print_results(results: List[Dict], engine_name: str, query: str, fmt: str = 
 
 
 # ──────────────────────── CLI ─────────────────────────────────
+def do_batch_search(
+    items: List[Dict],
+    headless: bool = True,
+    auto_close: bool = True,
+    proxy_url: Optional[str] = None,
+) -> List[Dict]:
+    """批量查询: 全程只启动一个 browser, 按引擎 locale 分组复用 context。
+
+    items: [{"query": str, "engine": str(默认 google), "num_results": int(默认10), "tag": 任意回显字段}]
+    返回: [{"index","query","engine","results","error"}], 与单次调用不同——单条失败不终止整批。
+    动机: 逐条 CLI 每条都付 5-8s 浏览器冷启动, 批量把 44 条查询的固定开销从 ~5min 压到 ~30s。
+    """
+    results_out: List[Dict] = []
+    with sync_playwright() as pw:
+        browser = None
+        contexts: Dict[tuple, BrowserContext] = {}  # (locale,tz) -> context
+        try:
+            for idx, item in enumerate(items):
+                query = item.get("query")
+                engine_key = (item.get("engine") or "google").lower()
+                max_res = int(item.get("num_results") or 10)
+                engine_cfg = ENGINES.get(engine_key)
+                if not query or not engine_cfg:
+                    results_out.append({"index": idx, "query": query, "engine": engine_key,
+                                        "results": [], "error": "bad item"})
+                    continue
+                locale, tz, langs = REGION_I18N.get(engine_key, DEFAULT_I18N)
+                ck = (locale, tz)
+                try:
+                    if browser is None:
+                        browser, first_ctx = create_context(pw, headless, proxy_url=proxy_url, engine_key=engine_key)
+                        contexts[ck] = first_ctx
+                    if ck not in contexts:
+                        contexts[ck] = _make_context_for(browser, proxy_url, langs, locale, tz)
+                    ctx = contexts[ck]
+                    page = ctx.new_page()
+                    try:
+                        enc = urllib.parse.quote_plus(query)
+                        page.goto(engine_cfg["search_url"].format(query=enc),
+                                  wait_until="domcontentloaded", timeout=30000)
+                        human_delay(800, 1600)
+                        if engine_key in ("google", "g"):
+                            check_google_captcha(page)
+                        try:
+                            page.wait_for_selector(engine_cfg.get("wait_for", "body"), timeout=15000)
+                        except Exception:
+                            pass
+                        human_delay(400, 900)
+                        res = extract_results(page, engine_cfg, max_res)
+                        results_out.append({"index": idx, "query": query, "engine": engine_key,
+                                            "results": res, "error": None, "tag": item.get("tag")})
+                    finally:
+                        page.close()
+                except Exception as e:
+                    results_out.append({"index": idx, "query": query, "engine": engine_key,
+                                        "results": [], "error": f"{type(e).__name__}: {e}",
+                                        "tag": item.get("tag")})
+        finally:
+            for c in contexts.values():
+                try:
+                    _save_storage_state(c)
+                    c.close()
+                except Exception:
+                    pass
+            if browser:
+                browser.close()
+    return results_out
+
+
+def _make_context_for(browser, proxy_url, langs, locale, tz) -> BrowserContext:
+    """为已存在的 browser 追加一个指定 locale 的 context(批量模式跨 locale 分组用)。"""
+    accept_lang = _accept_lang(langs)
+    kw = dict(
+        user_agent=random.choice(USER_AGENTS),
+        viewport=random.choice(VIEWPORTS),
+        locale=locale, timezone_id=tz,
+        extra_http_headers={"Accept-Language": accept_lang,
+                            "Upgrade-Insecure-Requests": "1"},
+        storage_state=_load_storage_state(),
+    )
+    if proxy_url:
+        kw["proxy"] = _parse_proxy(proxy_url)
+    ctx = browser.new_context(**kw)
+    ctx.add_init_script(STEALTH_INIT_SCRIPT.replace("__NAV_LANGS__", json.dumps(langs)))
+    return ctx
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Stealth browser search via Playwright",
@@ -1032,6 +1119,13 @@ Examples:
         action="store_true",
         help="Delete saved browser session/cookies and exit",
     )
+    p.add_argument(
+        "--batch-file",
+        metavar="JSON",
+        default=None,
+        help="批量模式: 一个 browser 跑完 JSON 数组 [{query, engine, num_results, tag}], "
+             "输出 JSONL(每行一条结果, 单条失败不终止整批), 免去逐条冷启动",
+    )
     return p
 
 
@@ -1073,6 +1167,16 @@ def main() -> None:
         else:
             print("[INFO] No saved session found.")
         return
+
+    if args.batch_file:
+        items = json.loads(Path(args.batch_file).read_text(encoding="utf-8"))
+        if not isinstance(items, list):
+            print("[ERROR] --batch-file 需要 JSON 数组", file=sys.stderr)
+            sys.exit(1)
+        out = do_batch_search(items, headless=args.headless, proxy_url=args.proxy)
+        for o in out:
+            print(json.dumps(o, ensure_ascii=False))
+        sys.exit(0 if any(o.get("results") for o in out) else 3)
 
     if args.url:
         # URL crawl mode
