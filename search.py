@@ -43,11 +43,16 @@ ENGINES: Dict[str, Dict] = {
         "name": "Google",
         "search_url": "https://www.google.com/search?q={query}&hl=en",
         "input_selector": 'textarea[name="q"], input[name="q"]',
-        "result_containers": ["#search .g", "#rso .g", "div[data-hveid]"],
+        # 2026 新版 SERP 已移除 .g 包裹(#search .g 命中 0), 退到 data-hveid 祖先层;
+        # 配合 require_title 滤掉无标题的 hveid 壳 + URL 去重, 实测恢复 9 条真结果
+        "result_containers": ["#search .g", "#rso .g", "div.g", "li.g", "div[data-hveid]"],
         "title_sel": "h3",
         "link_sel": "a[href]",
         "snippet_sel": [".VwiC3b", ".s3v9rd", ".IsZvec", "[data-sncf]", ".st"],
-        "wait_for": "#search, #rso",
+        "wait_for": "#search, #rso, .MBeuO, main",
+        "require_title": True,
+        # 2026 新版链接包裹: href=/goto?url=<protobuf token>(无明文), 跟随重定向可还原真实 URL
+        "resolve_redirects": True,
     },
     "bing": {
         "name": "Bing",
@@ -520,7 +525,9 @@ def extract_results(page: Page, engine_cfg: Dict, max_results: int = 10) -> List
             containers = found
             break
 
-    for container in containers[:max_results]:
+    for container in containers:  # 不可先切 [:max_results]: require_title/去重会过滤掉前部容器(如 Google 顶部 hveid 壳), 预切会导致 0 结果
+        if len(results) >= max_results:
+            break
         title = ""
         url = ""
         snippet = ""
@@ -574,9 +581,32 @@ def extract_results(page: Page, engine_cfg: Dict, max_results: int = 10) -> List
                     snippet = snip_el.get_text(strip=True)
                     break
 
+        if engine_cfg.get("require_title") and not title:
+            continue
         if title or url:
+            if url and any(url == r["url"] for r in results):  # 嵌套容器会重复框住同一条结果
+                continue
             results.append({"title": title, "url": url, "snippet": snippet})
 
+    if engine_cfg.get("resolve_redirects"):
+        results = _resolve_wrapped_urls(page, results)
+    return results
+
+
+def _resolve_wrapped_urls(page: Page, results: List[Dict]) -> List[Dict]:
+    """还原 google 新版 /goto?url=<token> 与 /url? 包裹链接: 跟随一次重定向取最终 URL。"""
+    for r in results:
+        href = r.get("url") or ""
+        if href.startswith("/goto?") or href.startswith("/url?"):
+            href = "https://www.google.com" + href
+        if "/goto?url=" not in href:
+            continue
+        try:
+            resp = page.context.request.get(href, timeout=15000)
+            if resp.ok and resp.url and "/search?" not in resp.url:
+                r["url"] = resp.url
+        except Exception:
+            pass  # 失败保留原 token URL, 不比坏
     return results
 
 
