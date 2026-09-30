@@ -840,12 +840,33 @@ def _html_to_text(html: str) -> str:
     return text.strip()
 
 
+def _scroll_until_settled(page: Page) -> None:
+    """逐段滚到底并等懒加载收敛: 之前只滚半页, 长文章下半部分没进 DOM 就取内容 → 结果"截断"
+    (2026-09-30 修)。高度连续两轮不变即认为加载完, 上限 12 轮防爆页。"""
+    last_h = 0
+    for _ in range(12):
+        try:
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            human_delay(300, 600)
+            h = page.evaluate("document.body.scrollHeight")
+        except Exception:
+            break
+        if h == last_h:
+            break
+        last_h = h
+    # 回到顶部, 顺手给首屏后期渲染的 JS 一点时间
+    try:
+        page.evaluate("window.scrollTo(0, 0)")
+    except Exception:
+        pass
+
+
 def _crawl_url_with_page(page: Page, url: str, as_text: bool = True) -> str:
     """复用已有 page 对象爬取一个 URL。默认返回纯文本(as_text), --deep-html 走旧版压缩 HTML。"""
     page.goto(url, wait_until="domcontentloaded", timeout=30000)
     human_delay(800, 1800)
-    page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-    human_delay(300, 700)
+    _scroll_until_settled(page)
+    human_delay(400, 800)
     cleaned = clean_html(page.content())
     return _html_to_text(cleaned) if as_text else cleaned
 
@@ -1042,9 +1063,9 @@ def do_crawl(
                 except Exception:
                     pass
 
-            # Scroll to trigger lazy-load
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-            human_delay(500, 1000)
+            # Scroll to trigger lazy-load (滚到底等收敛, 与 deep 车道同一修复)
+            _scroll_until_settled(page)
+            human_delay(400, 800)
 
             html = page.content()
 
@@ -1379,6 +1400,12 @@ def main() -> None:
     if not engine_cfg:
         print(f"[ERROR] Unknown engine '{args.engine}'. Use --list-engines to see options.")
         sys.exit(1)
+
+    # 防呆: --deep-workers/--deep-html 只在 --deep 下有效, 忘带 --deep 时静默退化成 200 字摘要
+    # 容易被误读成"返回内容被截断"(2026-09-30 用户实测踩中), 显式警告。
+    if not args.deep and (args.deep_workers != 1 or args.deep_html):
+        print("[WARN] --deep-workers/--deep-html 需配合 --deep 才生效; "
+              "当前未带 --deep, 返回的是搜索结果页摘要(非网页正文)。", file=sys.stderr)
 
     print(f"[INFO] Searching '{args.query}' on {engine_cfg['name']} ...", file=sys.stderr)
 
