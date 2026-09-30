@@ -104,6 +104,7 @@ python search.py [选项]
 | `--json` | — | — | 以 JSON 格式输出结果 |
 | `--deep` | — | — | 深度搜索：抓取每条结果 URL 的**纯文本**正文替换摘要（去导航/页脚/标签，LLM 友好）|
 | `--deep-html` | — | — | 配合 `--deep`：保留旧版"清洗后压缩 HTML"输出（不加则默认纯文本）|
+| `--deep-workers` | — | `1` | 配合 `--deep`：爬取并发度，按目标域名分桶到 N 条车道（同域名道内串行限速、道间并发），建议 3~6 |
 | `--as-text` | — | — | `-u` 爬取模式返回纯文本；默认仍返回清洗后 HTML |
 | `--list-engines` | — | — | 列出所有支持的搜索引擎并退出 |
 | `--clear-session` | — | — | 删除已保存的浏览器会话/Cookie 并退出 |
@@ -133,6 +134,18 @@ python search.py --batch-file queries.json --json
 
 ```bash
 python search.py --batch-file queries.json --workers 6 --proxy http://127.0.0.1:7890
+```
+
+### 深度搜索 `--deep` 的并发车道 `--deep-workers`
+
+默认（`--deep-workers 1`）串行复用结果页那一个标签逐条抓取。加 `--deep-workers N`
+后按**目标域名** crc32 分桶到 N 条车道：同域名必落同一车道道内串行限速，不同域名
+道间并发；一条车道 = 一个线程 + 独立浏览器（Playwright sync API 的 page 不能跨线程
+复用，与批量 `--workers` 同一模型）。百度/Google 结果的跳转壳链接（`baidu.com/link?url=`、
+`google.com/goto?url=`）按整条 URL 打散，避免全部挤进壳域名一条车道变成假并行。
+
+```bash
+python search.py -q "最新 AI 监管 政策" -e baidu -n 10 --deep --deep-workers 5 --json
 ```
 
 `--workers 1`（默认）则各引擎依次跑，最保守。

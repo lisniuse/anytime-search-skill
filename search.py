@@ -14,6 +14,7 @@ import os
 import random
 import re
 import sys
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -24,6 +25,14 @@ try:
 except ImportError:
     print("[ERROR] playwright not installed. Run: pip install playwright && playwright install chromium")
     sys.exit(1)
+
+# Windows 控制台/重定向默认 GBK, 抓回的正文常含无法映射的码点 → UnicodeEncodeError 崩掉整个输出
+# (2026-09-30 实测: python search.py --deep ... > out.json 即触发)。统一改 UTF-8, 失败则放弃。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 try:
     from bs4 import BeautifulSoup, Comment, Tag, NavigableString
@@ -841,6 +850,95 @@ def _crawl_url_with_page(page: Page, url: str, as_text: bool = True) -> str:
     return _html_to_text(cleaned) if as_text else cleaned
 
 
+def _deep_bucket_key(url: str) -> str:
+    """车道分桶键: 默认按域名(同域名同车道, 道内串行限速)。
+    但百度/Google 结果的整页链接常是跳转壳(baidu.com/link?url=…, google.com/goto?url=…),
+    按壳域名分桶会把全部结果挤进一条车道 → 假并行; 壳 URL 改用整条 URL 打散到各车道。"""
+    try:
+        pr = urllib.parse.urlparse(url)
+        host = (pr.netloc or url).lower()
+    except Exception:
+        return url
+    is_wrapper = (
+        (host.endswith("baidu.com") or host.endswith("so.com") or host.endswith("sogou.com"))
+        and "/link" in pr.path
+    ) or (
+        "google." in host and ("/goto" in pr.path or pr.path.startswith("/url"))
+    )
+    return url if is_wrapper else host
+
+
+def _deep_crawl_parallel(
+    results: List[Dict],
+    headless: bool,
+    proxy_url: Optional[str],
+    engine_key: str,
+    deep_html: bool,
+    workers: int,
+    base_url: str = "",
+) -> None:
+    """--deep-workers N: 并发爬取结果 URL 并回填 snippet(原地修改 results)。
+
+    车道模型同批量 --workers: Playwright sync API 的 page 不能跨线程复用,
+    故一条车道 = 一个线程 + 独立 playwright/browser/context。
+    按 _deep_bucket_key 分桶 crc32 → 道内串行限速, 道间并发。
+    deep 车道只读会话不写回, 无会话文件竞争。
+    """
+    import zlib
+    from concurrent.futures import ThreadPoolExecutor
+
+    tasks = []
+    for i, r in enumerate(results):
+        u = r.get("url")
+        if not u:
+            continue
+        # 相对链接(/goto?url= 等 SERP 壳)按 SERP 页 URL 补全, 新车道的 about:blank 解析不了
+        if u.startswith("/") and base_url:
+            u = urllib.parse.urljoin(base_url, u)
+        tasks.append((i, u))
+    if not tasks:
+        return
+    lanes_n = max(1, min(workers, len(tasks)))
+    lanes: List[List] = [[] for _ in range(lanes_n)]
+    for i, u in tasks:
+        key = _deep_bucket_key(u)
+        lanes[zlib.crc32(key.encode("utf-8")) % lanes_n].append((i, u))
+
+    total = len(tasks)
+    lock = threading.Lock()
+    done = [0]
+
+    def run_lane(lane_tasks: List) -> None:
+        if not lane_tasks:
+            return
+        with sync_playwright() as pw:
+            browser, ctx = create_context(pw, headless, proxy_url=proxy_url,
+                                          engine_key=engine_key)
+            try:
+                page = ctx.new_page()
+                for idx, url in lane_tasks:
+                    with lock:
+                        done[0] += 1
+                        n = done[0]
+                    print(f"[DEEP] ({n}/{total}) Crawling {url} ...", file=sys.stderr)
+                    try:
+                        results[idx]["url"] = url  # 回填补全后的绝对链接
+                        results[idx]["snippet"] = _crawl_url_with_page(
+                            page, url, as_text=not deep_html)
+                    except Exception as e:
+                        print(f"[DEEP] 爬取失败: {e}", file=sys.stderr)
+                        results[idx]["snippet"] = ""
+            finally:
+                ctx.close()
+                browser.close()
+
+    non_empty = [l for l in lanes if l]
+    with ThreadPoolExecutor(max_workers=len(non_empty)) as ex:
+        futures = [ex.submit(run_lane, l) for l in non_empty]
+        for f in futures:
+            f.result()  # run_lane 内部已逐 URL 兜底, 这里只暴露车道级死亡
+
+
 # ───────────────────── Search Function ────────────────────────
 def do_search(
     query: str,
@@ -851,6 +949,7 @@ def do_search(
     auto_close: bool = True,
     deep: bool = False,
     deep_html: bool = False,
+    deep_workers: int = 1,
     proxy_url: Optional[str] = None,
 ) -> List[Dict]:
     engine_cfg = ENGINES.get(engine_key.lower())
@@ -889,18 +988,24 @@ def do_search(
 
             # Deep search: crawl each result URL and replace snippet with page content
             if deep:
-                for i, r in enumerate(results):
-                    if not r.get("url"):
-                        continue
-                    print(
-                        f"[DEEP] ({i+1}/{len(results)}) Crawling {r['url']} ...",
-                        file=sys.stderr,
-                    )
-                    try:
-                        r["snippet"] = _crawl_url_with_page(page, r["url"], as_text=not deep_html)
-                    except Exception as e:
-                        print(f"[DEEP] 爬取失败: {e}", file=sys.stderr)
-                        r["snippet"] = ""
+                url_count = sum(1 for r in results if r.get("url"))
+                if deep_workers > 1 and url_count > 1:
+                    # 并行车道另起浏览器, 不占用 SERP page; --no-auto-close 时 SERP 页原样保留
+                    _deep_crawl_parallel(results, headless, proxy_url, engine_key,
+                                         deep_html, deep_workers, base_url=page.url)
+                else:
+                    for i, r in enumerate(results):
+                        if not r.get("url"):
+                            continue
+                        print(
+                            f"[DEEP] ({i+1}/{len(results)}) Crawling {r['url']} ...",
+                            file=sys.stderr,
+                        )
+                        try:
+                            r["snippet"] = _crawl_url_with_page(page, r["url"], as_text=not deep_html)
+                        except Exception as e:
+                            print(f"[DEEP] 爬取失败: {e}", file=sys.stderr)
+                            r["snippet"] = ""
 
             if not auto_close:
                 print("[INFO] 浏览器保持打开，按 Enter 键关闭...", file=sys.stderr)
@@ -1166,6 +1271,14 @@ Examples:
         help="With --deep: keep the old cleaned-compressed HTML output instead of plain text",
     )
     p.add_argument(
+        "--deep-workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help="--deep 并发度: 按目标域名分桶到 N 条车道(同域名道内串行限速, 道间并发, "
+             "一车道=一个线程+独立浏览器)。1=串行复用 SERP 页(默认); 建议 3~6",
+    )
+    p.add_argument(
         "--as-text",
         action="store_true",
         default=False,
@@ -1277,6 +1390,7 @@ def main() -> None:
         auto_close=args.auto_close,
         deep=args.deep,
         deep_html=args.deep_html,
+        deep_workers=args.deep_workers,
         proxy_url=args.proxy,
     )
 
