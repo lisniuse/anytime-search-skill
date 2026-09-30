@@ -660,6 +660,12 @@ def create_context(
 
 
 def _storage_state_path() -> Path:
+    # ASX_STATE_FILE 允许并发调用方各自隔离会话状态(多进程分引擎时用), 未设则维持原行为
+    override = os.environ.get("ASX_STATE_FILE")
+    if override:
+        p = Path(override)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
     return USER_DATA_DIR / "storage_state.json"
 
 
