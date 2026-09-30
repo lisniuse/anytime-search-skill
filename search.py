@@ -1106,6 +1106,12 @@ def main() -> None:
     fmt = "json" if args.output_json else "text"
     print_results(results, engine_cfg["name"], args.query, fmt=fmt, deep=args.deep)
 
+    # 退出码约定: 0=有结果, 2=CAPTCHA, 3=查询成功但 0 条(引擎限流/真无结果)。
+    # 调用方(如多引擎调度器)可据此把"空"当软失败去换引擎, 无需解析输出猜。
+    if not results:
+        print("[INFO] 0 results (soft-fail, exit 3)", file=sys.stderr)
+        sys.exit(3)
+
 
 if __name__ == "__main__":
     main()
